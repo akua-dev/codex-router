@@ -92,7 +92,7 @@ export const makeRemoteAccountAdminClient = Effect.fn("makeRemoteAccountAdminCli
       path: string,
       init?: RequestInit
     ) {
-      const request = new Request(new URL(path, baseUrl), {
+      const request = new Request(new URL(path, baseUrl).toString(), {
         ...init,
         headers: {
           ...init?.headers,
