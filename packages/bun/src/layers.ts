@@ -3,10 +3,17 @@ import {
   ClientAuthenticator,
   CredentialUnavailableError,
   GatewayTelemetry,
+  OAuthClient,
+  SubscriptionAccountState,
+  SubscriptionAccountStore,
   SubscriptionCredential,
   TransportError,
   UpstreamTransport,
-  configuredSubscriptionRouterLayer
+  UsageProbe,
+  makeCodexUsageProbe,
+  makeFetchCodexControlTransport,
+  makeOpenAiOAuthClient,
+  subscriptionRouterLayer
 } from "@akua-dev/codex-router-codex"
 import {
   Candidate,
@@ -18,7 +25,8 @@ import {
 import { timingSafeEqual } from "node:crypto"
 import { Effect, Layer, Redacted } from "effect"
 import type { BunRuntimeConfig, ConfiguredAccount } from "./config.ts"
-import { sqliteRoutingStateLayer } from "./sqlite-routing-state.ts"
+import { bunMaintenanceLayer } from "./maintenance.ts"
+import { sqliteSubscriptionAccountStoreLayer } from "./sqlite-account-store.ts"
 
 const bearerToken = (request: Request): string | undefined => {
   const dedicated = request.headers.get("x-ai-router-token")?.trim()
@@ -81,6 +89,17 @@ const accountCredential = (account: ConfiguredAccount): SubscriptionCredential =
     refreshToken: account.refreshToken
   })
 
+const accountState = (account: ConfiguredAccount): SubscriptionAccountState => {
+  const candidate = accountCandidate(account)
+  return SubscriptionAccountState.make({
+    accountId: account.accountId,
+    credential: accountCredential(account),
+    enabled: true,
+    requiresReauthentication: false,
+    ...(candidate.usage === undefined ? {} : { usage: candidate.usage })
+  })
+}
+
 export const bunAccountDirectoryLayer = (config: BunRuntimeConfig) =>
   Layer.succeed(
     AccountDirectory,
@@ -135,15 +154,26 @@ export const bunGatewayTelemetryLayer = Layer.succeed(
 )
 
 export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
+  const storage = sqliteSubscriptionAccountStoreLayer(config.databasePath, defaultRoutingConfig)
+  const seed = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const store = yield* SubscriptionAccountStore
+      yield* store.seedIfAbsent(config.accounts.map(accountState))
+    })
+  ).pipe(Layer.provide(storage))
+  const initializedStorage = Layer.merge(storage, seed)
+  const controlTransport = makeFetchCodexControlTransport()
   const dependencies = Layer.mergeAll(
-    sqliteRoutingStateLayer(config.databasePath, defaultRoutingConfig),
+    initializedStorage,
     bunClientAuthenticatorLayer(config),
-    bunAccountDirectoryLayer(config),
     bunUpstreamTransportLayer,
-    bunGatewayTelemetryLayer
+    bunGatewayTelemetryLayer,
+    Layer.succeed(OAuthClient, makeOpenAiOAuthClient({ transport: controlTransport })),
+    Layer.succeed(UsageProbe, makeCodexUsageProbe({ transport: controlTransport }))
   )
-  return Layer.merge(
+  const application = Layer.merge(
     dependencies,
-    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
+    subscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
+  return Layer.merge(application, bunMaintenanceLayer.pipe(Layer.provide(application)))
 }
