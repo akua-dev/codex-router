@@ -1,10 +1,8 @@
 import { AccountId } from "@akua-dev/codex-router-core"
-import { AccountKind } from "@akua-dev/codex-router-codex"
 import { Effect, Redacted, Schema } from "effect"
 
 export class ConfiguredAccount extends Schema.Class<ConfiguredAccount>("ConfiguredAccount")({
   accountId: AccountId,
-  kind: AccountKind,
   accessToken: Schema.RedactedFromValue(Schema.String),
   providerAccountId: Schema.optionalKey(Schema.String),
   observedAt: Schema.Number,

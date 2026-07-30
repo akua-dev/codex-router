@@ -50,7 +50,6 @@ interface Probe {
 
 interface TestLayerOptions {
   readonly authorized?: boolean
-  readonly accountKind?: "codex_subscription" | "openai_api_key"
   readonly response?: () => Response
   readonly transportFailure?: boolean
   readonly bookkeepingFailure?: boolean
@@ -92,7 +91,6 @@ const makeTestLayer = (probe: Probe, options: TestLayerOptions = {}) => {
             AccountCredential.make({
               accessToken: Redacted.make("selected-secret"),
               accountId,
-              kind: options.accountKind ?? "codex_subscription",
               providerAccountId: "provider-account-a"
             })
           )
@@ -339,19 +337,19 @@ const post = (path: string, body = "{}", headers: HeadersInit = {}) =>
   })
 }
 
-layer(makeTestLayer(makeProbe(), { accountKind: "openai_api_key" }))("protocol helpers", (it) => {
-  it.effect("extracts only explicit bounded sessions and maps API-key compact paths", () =>
+layer(makeTestLayer(makeProbe()))("protocol helpers", (it) => {
+  it.effect("extracts only explicit bounded sessions and maps subscription paths", () =>
     Effect.gen(function* () {
       const session = yield* extractSessionKey(
         new Headers({ "x-codex-parent-thread-id": " thread-1 " })
       )
 
       expect(session.valueOrUndefined).toBe("thread-1")
-      expect(resolveUpstreamTarget("/v1/responses/compact", "openai_api_key")).toBe(
-        "https://api.openai.com/v1/responses/compact"
+      expect(resolveUpstreamTarget("/v1/responses/compact")).toBe(
+        "https://chatgpt.com/backend-api/codex/responses"
       )
-      expect(resolveUpstreamTarget("/codex/responses", "openai_api_key")).toBe(
-        "https://api.openai.com/v1/responses"
+      expect(resolveUpstreamTarget("/codex/responses")).toBe(
+        "https://chatgpt.com/backend-api/codex/responses"
       )
     })
   )

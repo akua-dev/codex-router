@@ -55,7 +55,6 @@ const testLayer = Layer.mergeAll(
           AccountCredential.make({
             accessToken: Redacted.make("upstream-secret"),
             accountId,
-            kind: "codex_subscription",
             providerAccountId: "provider-a"
           })
         )

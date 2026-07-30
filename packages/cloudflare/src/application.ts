@@ -19,7 +19,6 @@ import { type CloudflareWorkerApplication, makeWorkerFetch } from "./worker.ts"
 
 const CredentialBundle = Schema.Struct({
   accessToken: Schema.String,
-  kind: Schema.Literals(["codex_subscription", "openai_api_key"]),
   providerAccountId: Schema.optionalKey(Schema.String)
 })
 
@@ -80,7 +79,6 @@ const encodedCredential = (account: WorkerConfiguredAccount): Redacted.Redacted<
   Redacted.make(
     JSON.stringify({
       accessToken: Redacted.value(account.accessToken),
-      kind: account.kind,
       ...(account.providerAccountId === undefined
         ? {}
         : { providerAccountId: account.providerAccountId })
@@ -121,7 +119,6 @@ const credentialFromVault = Effect.fn("credentialFromVault")(function* (
   return AccountCredential.make({
     accessToken: Redacted.make(bundle.accessToken),
     accountId,
-    kind: bundle.kind,
     ...(bundle.providerAccountId === undefined
       ? {}
       : { providerAccountId: bundle.providerAccountId })

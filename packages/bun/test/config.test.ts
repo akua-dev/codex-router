@@ -10,7 +10,6 @@ describe("decodeBunConfig", () => {
           {
             accessToken: "upstream-secret",
             accountId: "account-a",
-            kind: "codex_subscription",
             observedAt: 1_800_000_000_000,
             providerAccountId: "provider-a",
             shortResetAt: 1_800_018_000_000,

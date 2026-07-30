@@ -74,7 +74,6 @@ const accountCredential = (account: ConfiguredAccount): AccountCredential =>
   AccountCredential.make({
     accessToken: account.accessToken,
     accountId: account.accountId,
-    kind: account.kind,
     ...(account.providerAccountId === undefined
       ? {}
       : { providerAccountId: account.providerAccountId })

@@ -6,7 +6,6 @@ import type {
   UsageSnapshot
 } from "@akua-dev/codex-router-core"
 import { Context, Effect, Option, Redacted, Schema } from "effect"
-import { AccountKind } from "./protocol.ts"
 
 export class AuthenticationError extends Schema.TaggedErrorClass<AuthenticationError>()(
   "AuthenticationError",
@@ -39,7 +38,6 @@ export class TransportError extends Schema.TaggedErrorClass<TransportError>()("T
 
 export class AccountCredential extends Schema.Class<AccountCredential>("AccountCredential")({
   accountId: Schema.String.pipe(Schema.brand("AccountId")),
-  kind: AccountKind,
   accessToken: Schema.Redacted(Schema.String),
   providerAccountId: Schema.optionalKey(Schema.String)
 }) {

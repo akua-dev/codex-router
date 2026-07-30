@@ -24,14 +24,14 @@ truth for subscription quota or sticky assignment state.
 
 OpenAI documents Codex access through ChatGPT plans, but it does not document multi-user ChatGPT
 OAuth pooling as a supported public API product. OpenAI also states that ChatGPT and API billing are
-separate. Therefore:
+separate. This project is intentionally a ChatGPT subscription router, not an OpenAI API router.
+Therefore:
 
 - ChatGPT subscription routing is experimental and requires an explicit terms, privacy, and
   organizational-policy review before real use.
 - Never invent or document a “Codex subscription API key.” No such public credential type is
   documented.
-- Keep `codex_subscription` behind its own adapter. The supported `openai_api_key` mode must remain
-  separate.
+- Do not add OpenAI API-key accounts, API billing, or API upstream routing.
 - Never claim that Cloudflare AI Gateway can consume a ChatGPT subscription directly. Its official
   Codex integration uses its OpenAI endpoint and Cloudflare-managed or provider credentials.
 - Never claim production readiness while OAuth acquisition/refresh, live quota refresh, deployed
@@ -114,8 +114,7 @@ Supported incoming POST paths:
 - `/responses/compact`
 - `/v1/responses/compact`
 
-Codex subscription traffic maps to `https://chatgpt.com/backend-api/codex/responses`. Standard
-API-key traffic maps to `https://api.openai.com/v1/responses` or `/v1/responses/compact`.
+All model traffic maps to `https://chatgpt.com/backend-api/codex/responses`.
 
 Native Codex remote compaction may arrive at `/codex/responses` with a `compaction_trigger`; forward
 it opaquely. Do not parse or persist prompts, input items, tool calls, encrypted reasoning,

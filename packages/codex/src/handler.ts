@@ -36,7 +36,7 @@ const makeUpstreamRequest = (
   Effect.sync(() => {
     const headers = sanitizeRequestHeaders(original.headers)
     headers.set("authorization", credential.authorization)
-    if (credential.kind === "codex_subscription" && credential.providerAccountId !== undefined) {
+    if (credential.providerAccountId !== undefined) {
       headers.set("chatgpt-account-id", credential.providerAccountId)
     } else {
       headers.delete("chatgpt-account-id")
@@ -48,7 +48,7 @@ const makeUpstreamRequest = (
       method: "POST",
       signal: original.signal
     }
-    return new Request(resolveUpstreamTarget(path, credential.kind), init)
+    return new Request(resolveUpstreamTarget(path), init)
   })
 
 const streamWithLease = (

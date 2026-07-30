@@ -67,7 +67,6 @@ describe("worker bindings", () => {
           {
             accessToken: "provider-secret-value",
             accountId: "account-a",
-            kind: "codex_subscription",
             observedAt: now,
             providerAccountId: "provider-a",
             shortResetAt: now + 60 * 60 * 1_000,
@@ -154,7 +153,6 @@ describe("worker bindings", () => {
             AccountCredential.make({
               accessToken: Redacted.make("provider-secret"),
               accountId,
-              kind: "codex_subscription",
               providerAccountId: "provider-a"
             })
           )
