@@ -79,6 +79,42 @@ export class SelectionDecision extends Schema.Class<SelectionDecision>("Selectio
   explanations: Schema.Array(CandidateExplanation)
 }) {}
 
+export class SessionAssignment extends Schema.Class<SessionAssignment>("SessionAssignment")({
+  sessionKey: SessionKey,
+  accountId: AccountId,
+  updatedAt: Schema.Number
+}) {}
+
+export class Reservation extends Schema.Class<Reservation>("Reservation")({
+  leaseToken: LeaseToken,
+  accountId: AccountId,
+  sessionKey: Schema.Option(SessionKey),
+  createdAt: Schema.Number,
+  expiresAt: Schema.Number
+}) {}
+
+export class RouteLease extends Schema.Class<RouteLease>("RouteLease")({
+  leaseToken: LeaseToken,
+  accountId: AccountId,
+  sessionKey: Schema.Option(SessionKey),
+  expiresAt: Schema.Number
+}) {}
+
+export class AccountRoutingSummary extends Schema.Class<AccountRoutingSummary>(
+  "AccountRoutingSummary"
+)({
+  accountId: AccountId,
+  activeReservations: Schema.Number,
+  requiresReauthentication: Schema.Boolean,
+  blockKind: Schema.Option(Schema.Literals(["quota", "transient"]))
+}) {}
+
+export class RoutingSummary extends Schema.Class<RoutingSummary>("RoutingSummary")({
+  activeReservations: Schema.Number,
+  assignments: Schema.Number,
+  accounts: Schema.Array(AccountRoutingSummary)
+}) {}
+
 export interface RoutingConfig {
   readonly usageFreshnessMs: number
   readonly maximumUsageAgeMs: number
