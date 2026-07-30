@@ -41,21 +41,21 @@ The deployed Worker canary made exactly one request and received:
 ```json
 {
   "bytes": 62,
-  "firstByteMs": 487.52549999999997,
+  "firstByteMs": 533.636474609375,
   "requestCount": 1,
   "status": 200,
-  "totalMs": 586.5805
+  "totalMs": 629.568359375
 }
 ```
 
 The client’s bytes matched the fixture exactly and the first byte arrived before completion.
 
-AI Gateway log `01KYT0BDZJ33W38W9GVQ572YC4` recorded:
+AI Gateway log `01KYT0REM89V846RPG8HVMCQF9` recorded:
 
-- timestamp `2026-07-30T17:15:02.034Z`;
+- timestamp `2026-07-30T17:22:08.621Z`;
 - status 200;
 - custom-provider path ending in `/synthetic/sse`;
-- duration 275 ms;
+- duration 269 ms;
 - cache miss / not cached;
 - metadata `protocol=responses`, `runtime=cloudflare`;
 - stored request length 0;
