@@ -1,3 +1,8 @@
+import { Schema } from "effect"
+
+export const AccountKind = Schema.Literals(["codex_subscription", "openai_api_key"])
+export type AccountKind = typeof AccountKind.Type
+
 export type SupportedResponsePath =
   | "/responses"
   | "/v1/responses"
@@ -16,5 +21,14 @@ export const supportedResponsePaths: ReadonlyArray<SupportedResponsePath> = [
 export const isSupportedResponsePath = (path: string): path is SupportedResponsePath =>
   supportedResponsePaths.some((supported) => supported === path)
 
-export const resolveUpstreamTarget = (_path: string): string =>
-  "https://chatgpt.com/backend-api/codex/responses"
+export const resolveUpstreamTarget = (
+  path: string,
+  accountKind: AccountKind = "codex_subscription"
+): string => {
+  if (accountKind === "codex_subscription") {
+    return "https://chatgpt.com/backend-api/codex/responses"
+  }
+  return path.endsWith("/compact")
+    ? "https://api.openai.com/v1/responses/compact"
+    : "https://api.openai.com/v1/responses"
+}

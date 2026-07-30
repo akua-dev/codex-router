@@ -444,6 +444,12 @@ layer(makeTestLayer(makeProbe()))("protocol helpers", (it) => {
       expect(resolveUpstreamTarget("/codex/responses")).toBe(
         "https://chatgpt.com/backend-api/codex/responses"
       )
+      expect(resolveUpstreamTarget("/v1/responses/compact", "openai_api_key")).toBe(
+        "https://api.openai.com/v1/responses/compact"
+      )
+      expect(resolveUpstreamTarget("/codex/responses", "openai_api_key")).toBe(
+        "https://api.openai.com/v1/responses"
+      )
     })
   )
 })
