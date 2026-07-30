@@ -2,12 +2,14 @@ import { RoutingState } from "@akua-dev/codex-router-core"
 import {
   AdminAuthenticator,
   ClientAuthenticator,
-  makeAccountAdminFetch,
-  makeRouterFetch,
+  makeAccountAdminHttpHandler,
+  makeRawWebHandler,
+  makeRouterHttpHandler,
   type RouterFetch,
   UpstreamTransport
 } from "@akua-dev/codex-router-codex"
 import { Clock, Effect, Option, Result } from "effect"
+import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { CredentialKeyAdmin } from "./credential-key-admin.ts"
 
 const keyVersionResponse = Effect.fn("keyVersionResponse")(function* (
@@ -81,33 +83,35 @@ const syntheticCanary = Effect.fn("syntheticCanary")(function* (
 })
 
 export const makeWorkerFetch = Effect.fn("makeWorkerFetch")(function* () {
-  const routerFetch = yield* makeRouterFetch()
-  const adminFetch = yield* makeAccountAdminFetch()
+  const routerHandler = yield* makeRouterHttpHandler()
+  const adminHandler = yield* makeAccountAdminHttpHandler()
   const authenticator = yield* ClientAuthenticator
   const adminAuthenticator = yield* AdminAuthenticator
   const keyAdmin = yield* CredentialKeyAdmin
   const routingState = yield* RoutingState
   const transport = yield* UpstreamTransport
+  const router = yield* HttpRouter.make
 
-  return (request: Request): Promise<Response> => {
-    const path = new URL(request.url).pathname
-    if (path === "/healthz" && request.method === "GET") {
-      return Promise.resolve(Response.json({ status: "ok" }))
-    }
-    if (path === "/status" && request.method === "GET") {
-      return Effect.runPromise(workerStatus(request, authenticator, routingState))
-    }
-    if (path === "/admin/canary/sse" && request.method === "GET") {
-      return Effect.runPromise(syntheticCanary(request, adminAuthenticator, transport))
-    }
-    if (path === "/admin/key-versions" && request.method === "GET") {
-      return Effect.runPromise(keyVersionResponse(request, adminAuthenticator, keyAdmin))
-    }
-    if (path.startsWith("/admin/")) {
-      return adminFetch(request)
-    }
-    return routerFetch(request)
-  }
+  yield* router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" }))
+  yield* router.add(
+    "GET",
+    "/status",
+    makeRawWebHandler((request) => workerStatus(request, authenticator, routingState))
+  )
+  yield* router.add(
+    "GET",
+    "/admin/canary/sse",
+    makeRawWebHandler((request) => syntheticCanary(request, adminAuthenticator, transport))
+  )
+  yield* router.add(
+    "GET",
+    "/admin/key-versions",
+    makeRawWebHandler((request) => keyVersionResponse(request, adminAuthenticator, keyAdmin))
+  )
+  yield* router.add("*", "/admin/*", adminHandler)
+  yield* router.add("*", "/*", routerHandler)
+
+  return HttpEffect.toWebHandler(router.asHttpEffect())
 })
 
 export interface CloudflareWorkerApplication {

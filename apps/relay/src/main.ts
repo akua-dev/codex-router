@@ -1,19 +1,24 @@
-import { decodeRelayConfig, makeCodexEgressRelay } from "@akua-dev/codex-router-relay"
-import { Effect } from "effect"
+import { codexEgressRelayRoutes, decodeRelayConfig } from "@akua-dev/codex-router-relay"
+import * as BunCrypto from "@effect/platform-bun/BunCrypto"
+import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import { Effect, Layer } from "effect"
+import { HttpRouter } from "effect/unstable/http"
 
-const config = await Effect.runPromise(decodeRelayConfig(process.env))
-const relay = makeCodexEgressRelay({ token: config.token })
-const server = Bun.serve({
-  fetch: relay,
-  hostname: config.hostname,
-  port: config.port
+const main = Effect.gen(function* () {
+  const config = yield* decodeRelayConfig(process.env)
+  const infrastructure = Layer.merge(
+    BunCrypto.layer,
+    BunHttpServer.layer({
+      hostname: config.hostname,
+      port: config.port
+    })
+  )
+  const served = HttpRouter.serve(codexEgressRelayRoutes({ token: config.token }), {
+    disableListenLog: false,
+    disableLogger: false
+  }).pipe(Layer.provide(infrastructure))
+  return yield* Layer.launch(Layer.merge(infrastructure, served))
 })
 
-console.info(`codex-router egress relay listening on ${server.url.origin}`)
-
-const shutdown = (): void => {
-  server.stop(true)
-}
-
-process.once("SIGINT", shutdown)
-process.once("SIGTERM", shutdown)
+BunRuntime.runMain(main)

@@ -1,5 +1,6 @@
 import { AccountId, type AccountId as AccountIdType } from "@akua-dev/codex-router-core"
-import { Context, Effect, Layer, Option, Redacted, Result, Schema } from "effect"
+import { Clock, Context, Effect, Layer, Option, Redacted, Result, Schema } from "effect"
+import { HttpEffect } from "effect/unstable/http"
 import { SubscriptionAccountStore, type SubscriptionAccountState } from "./account-store.ts"
 import type { SubscriptionCredential } from "./credentials.ts"
 import {
@@ -7,6 +8,7 @@ import {
   extractProviderAccountId
 } from "./credentials.ts"
 import { AdminAuthenticator } from "./services.ts"
+import { makeRawWebHandler } from "./http-application.ts"
 
 export class AccountAdminSummary extends Schema.Class<AccountAdminSummary>("AccountAdminSummary")({
   accountId: AccountId,
@@ -161,7 +163,7 @@ const accountPath = (
 const responseError = (status: number, error: string): Response =>
   Response.json({ error }, { status })
 
-export const makeAccountAdminFetch = Effect.fn("makeAccountAdminFetch")(function* () {
+export const makeAccountAdminHttpHandler = Effect.fn("makeAccountAdminHttpHandler")(function* () {
   const authenticator = yield* AdminAuthenticator
   const admin = yield* AccountAdmin
 
@@ -216,7 +218,7 @@ export const makeAccountAdminFetch = Effect.fn("makeAccountAdminFetch")(function
             providerAccountId: providerAccountId.success,
             refreshToken: Redacted.make(parsedBody.success.refreshToken)
           }),
-          Date.now()
+          yield* Clock.currentTimeMillis
         )
       )
       if (Result.isFailure(stored)) {
@@ -235,7 +237,7 @@ export const makeAccountAdminFetch = Effect.fn("makeAccountAdminFetch")(function
         return responseError(400, "invalid_account_state")
       }
       const stored = yield* Effect.result(
-        admin.setEnabled(accountId, parsedBody.success.enabled, Date.now())
+        admin.setEnabled(accountId, parsedBody.success.enabled, yield* Clock.currentTimeMillis)
       )
       if (Result.isFailure(stored)) {
         return responseError(503, "account_store_unavailable")
@@ -258,10 +260,14 @@ export const makeAccountAdminFetch = Effect.fn("makeAccountAdminFetch")(function
     return responseError(404, "not_found")
   })
 
-  return (request: Request): Promise<Response> =>
-    Effect.runPromise(
-      route(request).pipe(
-        Effect.catchCause(() => Effect.succeed(responseError(500, "internal_error")))
-      )
+  return makeRawWebHandler((request) =>
+    route(request).pipe(
+      Effect.catchCause(() => Effect.succeed(responseError(500, "internal_error")))
     )
+  )
+})
+
+export const makeAccountAdminFetch = Effect.fn("makeAccountAdminFetch")(function* () {
+  const handler = yield* makeAccountAdminHttpHandler()
+  return HttpEffect.toWebHandler(handler)
 })

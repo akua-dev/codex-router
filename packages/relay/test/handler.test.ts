@@ -1,11 +1,15 @@
 import { describe, expect, it } from "@effect/vitest"
-import { Redacted } from "effect"
-import { makeCodexEgressRelay } from "../src/index.ts"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
+import { Effect, Redacted } from "effect"
+import { makeCodexEgressRelay, type CodexEgressRelayOptions } from "../src/index.ts"
+
+const makeRelay = (options: CodexEgressRelayOptions) =>
+  Effect.runPromise(makeCodexEgressRelay(options).pipe(Effect.provide(BrowserCrypto.layer)))
 
 describe("Codex egress relay", () => {
   it("exposes only a public liveness response", async () => {
     let upstreamCalls = 0
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async () => {
         upstreamCalls += 1
         return new Response()
@@ -33,7 +37,7 @@ describe("Codex egress relay", () => {
       },
       { highWaterMark: 0 }
     )
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async () => {
         upstreamCalls += 1
         return new Response()
@@ -61,7 +65,7 @@ describe("Codex egress relay", () => {
     const third = expected.slice(23)
     let upstreamCalls = 0
     let upstreamRequest: Request | undefined
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async (request) => {
         upstreamCalls += 1
         upstreamRequest = request
@@ -132,7 +136,7 @@ describe("Codex egress relay", () => {
 
   it("allows only the Codex response and quota endpoints", async () => {
     let upstreamCalls = 0
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async () => {
         upstreamCalls += 1
         return new Response()
@@ -152,7 +156,7 @@ describe("Codex egress relay", () => {
 
   it("accepts AI Gateway's v1-prefixed quota path without widening the proxy", async () => {
     let upstreamUrl: string | undefined
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async (request) => {
         upstreamUrl = request.url
         return Response.json({ plan_type: "pro" })
@@ -176,7 +180,7 @@ describe("Codex egress relay", () => {
 
   it("emits a delayed byte-sensitive synthetic SSE fixture without an upstream call", async () => {
     let upstreamCalls = 0
-    const relay = makeCodexEgressRelay({
+    const relay = await makeRelay({
       fetch: async () => {
         upstreamCalls += 1
         return new Response()

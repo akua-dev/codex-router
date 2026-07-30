@@ -104,9 +104,6 @@ export const makeCloudflareWorkerApplication = async (
   config: WorkerRuntimeConfig,
   fetchImplementation: (request: Request) => Promise<Response> = fetch
 ): Promise<CloudflareWorkerApplication> => {
-  const cipher = await Effect.runPromise(
-    importCredentialKeyring(config.credentialKeyring).pipe(Effect.provide(BrowserCrypto.layer))
-  )
   const objectId = config.routerState.idFromName("global")
   const stub = config.routerState.get(objectId)
   const internalToken = Redacted.value(config.adminToken)
@@ -115,29 +112,36 @@ export const makeCloudflareWorkerApplication = async (
     workerAdminAuthenticatorLayer(config)
   ).pipe(Layer.provide(BrowserCrypto.layer))
 
-  const layer = Layer.mergeAll(
-    BrowserCrypto.layer,
-    durableObjectRoutingStateLayer(stub),
-    durableSubscriptionRouterLayer(stub, cipher, internalToken),
-    authenticators,
-    Layer.succeed(AccountAdmin, makeDurableAccountAdmin(stub, internalToken)),
-    Layer.succeed(CredentialKeyAdmin, makeDurableCredentialKeyAdmin(stub, internalToken)),
-    Layer.succeed(
-      UpstreamTransport,
-      makeAiGatewayTransport({
-        accountId: config.aiGatewayAccountId,
-        customProviderSlug: config.aiGatewayCustomProviderSlug,
-        fetch: fetchImplementation,
-        gatewayId: config.aiGatewayGatewayId,
-        metadata: {
-          protocol: "responses",
-          runtime: "cloudflare"
-        },
-        relayToken: config.relayToken,
-        runToken: config.aiGatewayRunToken
-      })
-    ),
-    workerTelemetryLayer
+  const layer = Layer.unwrap(
+    importCredentialKeyring(config.credentialKeyring).pipe(
+      Effect.provide(BrowserCrypto.layer),
+      Effect.map((cipher) =>
+        Layer.mergeAll(
+          BrowserCrypto.layer,
+          durableObjectRoutingStateLayer(stub),
+          durableSubscriptionRouterLayer(stub, cipher, internalToken),
+          authenticators,
+          Layer.succeed(AccountAdmin, makeDurableAccountAdmin(stub, internalToken)),
+          Layer.succeed(CredentialKeyAdmin, makeDurableCredentialKeyAdmin(stub, internalToken)),
+          Layer.succeed(
+            UpstreamTransport,
+            makeAiGatewayTransport({
+              accountId: config.aiGatewayAccountId,
+              customProviderSlug: config.aiGatewayCustomProviderSlug,
+              fetch: fetchImplementation,
+              gatewayId: config.aiGatewayGatewayId,
+              metadata: {
+                protocol: "responses",
+                runtime: "cloudflare"
+              },
+              relayToken: config.relayToken,
+              runToken: config.aiGatewayRunToken
+            })
+          ),
+          workerTelemetryLayer
+        )
+      )
+    )
   )
   const runtime = ManagedRuntime.make(layer)
   try {
@@ -146,7 +150,7 @@ export const makeCloudflareWorkerApplication = async (
     return {
       close: runtime.dispose,
       fetch: workerFetch,
-      maintain: (now: number) => Effect.runPromise(router.maintain(now))
+      maintain: (now: number) => runtime.runPromise(router.maintain(now))
     }
   } catch (error) {
     await runtime.dispose()

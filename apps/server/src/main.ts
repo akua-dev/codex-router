@@ -1,30 +1,16 @@
-import { decodeBunConfig, makeBunApplication, startBunServer } from "@akua-dev/codex-router-bun"
-import { Effect } from "effect"
-import { mkdirSync } from "node:fs"
-import { dirname } from "node:path"
+import { bunServerLayer, decodeBunConfig } from "@akua-dev/codex-router-bun"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import * as BunServices from "@effect/platform-bun/BunServices"
+import { Effect, FileSystem, Layer, Path } from "effect"
 
-const main = async (): Promise<void> => {
-  const config = await Effect.runPromise(decodeBunConfig(process.env))
-  mkdirSync(dirname(config.databasePath), { recursive: true })
-  const application = await makeBunApplication(config)
-  const server = startBunServer({
-    fetch: application.fetch,
-    hostname: config.hostname,
-    port: config.port
+const main = Effect.gen(function* () {
+  const config = yield* decodeBunConfig(process.env)
+  const fileSystem = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  yield* fileSystem.makeDirectory(path.dirname(config.databasePath), {
+    recursive: true
   })
+  return yield* Layer.launch(bunServerLayer(config))
+}).pipe(Effect.provide(BunServices.layer))
 
-  console.info(`codex-router listening on ${server.url.origin}`)
-
-  const shutdown = async (): Promise<void> => {
-    server.stop(true)
-    await application.close()
-  }
-  process.once("SIGINT", () => {
-    void shutdown()
-  })
-  process.once("SIGTERM", () => {
-    void shutdown()
-  })
-}
-
-await main()
+BunRuntime.runMain(main)

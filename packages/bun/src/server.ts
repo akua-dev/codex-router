@@ -1,11 +1,16 @@
 import { RoutingState } from "@akua-dev/codex-router-core"
 import {
   ClientAuthenticator,
-  makeAccountAdminFetch,
-  makeRouterFetch,
-  type RouterFetch
+  makeAccountAdminHttpHandler,
+  makeRawWebHandler,
+  makeRouterHttpHandler
 } from "@akua-dev/codex-router-codex"
+import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import { Clock, Effect, Option, Result } from "effect"
+import * as Layer from "effect/Layer"
+import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http"
+import type { BunRuntimeConfig } from "./config.ts"
+import { bunRuntimeLayer } from "./layers.ts"
 
 const statusResponse = Effect.fn("bunStatusResponse")(function* (
   request: Request,
@@ -34,35 +39,63 @@ const statusResponse = Effect.fn("bunStatusResponse")(function* (
 })
 
 export const makeBunFetch = Effect.fn("makeBunFetch")(function* () {
-  const routerFetch = yield* makeRouterFetch()
-  const adminFetch = yield* makeAccountAdminFetch()
+  const routerHandler = yield* makeRouterHttpHandler()
+  const adminHandler = yield* makeAccountAdminHttpHandler()
+  const authenticator = yield* ClientAuthenticator
+  const routingState = yield* RoutingState
+  const router = yield* HttpRouter.make
+
+  yield* router.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" }))
+  yield* router.add(
+    "GET",
+    "/status",
+    makeRawWebHandler((request) => statusResponse(request, authenticator, routingState))
+  )
+  yield* router.add("*", "/admin/*", adminHandler)
+  yield* router.add("*", "/*", routerHandler)
+
+  return HttpEffect.toWebHandler(router.asHttpEffect())
+})
+
+const makeBunHttpRoutes = Effect.fn("makeBunHttpRoutes")(function* () {
+  const routerHandler = yield* makeRouterHttpHandler()
+  const adminHandler = yield* makeAccountAdminHttpHandler()
   const authenticator = yield* ClientAuthenticator
   const routingState = yield* RoutingState
 
-  return (request: Request): Promise<Response> => {
-    const path = new URL(request.url).pathname
-    if (path === "/healthz" && request.method === "GET") {
-      return Promise.resolve(Response.json({ status: "ok" }))
-    }
-    if (path === "/status" && request.method === "GET") {
-      return Effect.runPromise(statusResponse(request, authenticator, routingState))
-    }
-    if (path.startsWith("/admin/")) {
-      return adminFetch(request)
-    }
-    return routerFetch(request)
-  }
+  return Layer.mergeAll(
+    HttpRouter.add("GET", "/healthz", HttpServerResponse.jsonUnsafe({ status: "ok" })),
+    HttpRouter.add(
+      "GET",
+      "/status",
+      makeRawWebHandler((request) => statusResponse(request, authenticator, routingState))
+    ),
+    HttpRouter.add("*", "/admin/*", adminHandler),
+    HttpRouter.add("*", "/*", routerHandler)
+  )
 })
 
-export interface BunServerOptions {
-  readonly fetch: RouterFetch
-  readonly port: number
-  readonly hostname?: string
+export const bunHttpRoutes = Layer.unwrap(makeBunHttpRoutes())
+
+export interface BunServerLayerOptions {
+  readonly idleTimeout?: number
+  readonly maintenance?: boolean
 }
 
-export const startBunServer = (options: BunServerOptions): Bun.Server<unknown> =>
-  Bun.serve({
-    fetch: options.fetch,
-    ...(options.hostname === undefined ? {} : { hostname: options.hostname }),
-    port: options.port
+export const bunServerLayer = (config: BunRuntimeConfig, options: BunServerLayerOptions = {}) => {
+  const runtime = bunRuntimeLayer(
+    config,
+    options.maintenance === undefined ? {} : { maintenance: options.maintenance }
+  )
+  const server = BunHttpServer.layer({
+    hostname: config.hostname,
+    ...(options.idleTimeout === undefined ? {} : { idleTimeout: options.idleTimeout }),
+    port: config.port
   })
+  const infrastructure = Layer.merge(runtime, server)
+  const served = HttpRouter.serve(bunHttpRoutes, {
+    disableListenLog: false,
+    disableLogger: false
+  }).pipe(Layer.provide(infrastructure))
+  return Layer.merge(infrastructure, served)
+}

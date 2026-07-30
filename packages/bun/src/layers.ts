@@ -189,7 +189,11 @@ export const bunGatewayTelemetryLayer = Layer.succeed(
   })
 )
 
-export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
+export interface BunRuntimeLayerOptions {
+  readonly maintenance?: boolean
+}
+
+export const bunRuntimeLayer = (config: BunRuntimeConfig, options: BunRuntimeLayerOptions = {}) => {
   const storage = sqliteSubscriptionAccountStoreLayer(config.databasePath, defaultRoutingConfig)
   const seed = Layer.effectDiscard(
     Effect.gen(function* () {
@@ -234,5 +238,7 @@ export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
     accountAdminLayer.pipe(Layer.provide(dependencies)),
     subscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
-  return Layer.merge(application, bunMaintenanceLayer.pipe(Layer.provide(application)))
+  return options.maintenance === false
+    ? application
+    : Layer.merge(application, bunMaintenanceLayer.pipe(Layer.provide(application)))
 }

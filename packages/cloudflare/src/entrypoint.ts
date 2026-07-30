@@ -1,4 +1,5 @@
 import { type CloudflareWorkerApplication, type WorkerExecutionContext } from "./worker.ts"
+import { Clock, Effect } from "effect"
 
 export interface WorkerScheduledController {}
 
@@ -95,9 +96,12 @@ export const makeWorkerEntrypoint = (
     }
   },
   scheduled(_controller, environment, context) {
-    const maintenance = applicationFactory(environment).then(async (application) => {
+    const maintenance = Promise.all([
+      applicationFactory(environment),
+      Effect.runPromise(Clock.currentTimeMillis)
+    ]).then(async ([application, now]) => {
       try {
-        await application.maintain(Date.now())
+        await application.maintain(now)
       } finally {
         await closeIgnoringFailure(application)
       }

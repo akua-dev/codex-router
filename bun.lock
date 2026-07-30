@@ -88,7 +88,11 @@
       "name": "@akua-dev/codex-router-relay",
       "version": "0.0.0",
       "dependencies": {
+        "@akua-dev/codex-router-codex": "workspace:*",
         "effect": "4.0.0-beta.102",
+      },
+      "devDependencies": {
+        "@effect/platform-browser": "4.0.0-beta.102",
       },
     },
   },

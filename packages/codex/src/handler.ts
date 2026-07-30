@@ -3,9 +3,11 @@ import {
   type LeaseToken,
   type RouteLease
 } from "@akua-dev/codex-router-core"
-import { Effect, Option, Redacted, Result } from "effect"
+import { Clock, Effect, Option, Redacted, Result } from "effect"
+import { HttpEffect } from "effect/unstable/http"
 import type { SubscriptionCredential } from "./credentials.ts"
 import { sanitizeRequestHeaders, sanitizeResponseHeaders } from "./headers.ts"
+import { makeRawWebHandler } from "./http-application.ts"
 import { isSupportedResponsePath, resolveUpstreamTarget } from "./protocol.ts"
 import { ClientAuthenticator, GatewayTelemetry, UpstreamTransport } from "./services.ts"
 import { extractSessionKey } from "./session.ts"
@@ -49,14 +51,16 @@ const makeUpstreamRequest = (
 const streamWithLease = (
   body: ReadableStream<Uint8Array>,
   router: SubscriptionRouter["Service"],
-  lease: RouteLease
+  lease: RouteLease,
+  initialNow: number,
+  runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 ): ReadableStream<Uint8Array> => {
   const reader = body.getReader()
   let finishPromise: Promise<void> | undefined
-  let nextRenewAt = Date.now() + 40_000
+  let nextRenewAt = initialNow + 40_000
   const finish = (): Promise<void> => {
     if (finishPromise === undefined) {
-      finishPromise = Effect.runPromise(releaseIgnoringFailure(router, lease.leaseToken))
+      finishPromise = runPromise(releaseIgnoringFailure(router, lease.leaseToken))
     }
     return finishPromise
   }
@@ -64,10 +68,10 @@ const streamWithLease = (
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const now = Date.now()
+        const now = await runPromise(Clock.currentTimeMillis)
         if (now >= nextRenewAt) {
           nextRenewAt = now + 40_000
-          await Effect.runPromise(
+          await runPromise(
             router.renew(lease.leaseToken, now).pipe(Effect.catchCause(() => Effect.succeed(false)))
           )
         }
@@ -102,7 +106,8 @@ interface RouteDependencies {
 
 const routeRequest = Effect.fn("routeRequest")(function* (
   request: Request,
-  dependencies: RouteDependencies
+  dependencies: RouteDependencies,
+  runPromise: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 ) {
   const authentication = yield* Effect.result(dependencies.authenticator.authenticate(request))
   if (Result.isFailure(authentication)) {
@@ -123,9 +128,10 @@ const routeRequest = Effect.fn("routeRequest")(function* (
   }
   const sessionKey = sessionResult.success
 
+  const now = yield* Clock.currentTimeMillis
   const grantResult = yield* Effect.result(
     dependencies.router.acquire({
-      now: Date.now(),
+      now,
       ...(Option.isNone(sessionKey) ? {} : { sessionKey: sessionKey.value })
     })
   )
@@ -159,9 +165,10 @@ const routeRequest = Effect.fn("routeRequest")(function* (
     return jsonResponse(502, "upstream_unavailable")
   }
   const upstream = upstreamResult.success
-  const classification = classifyUpstreamResponse(upstream.status, upstream.headers, Date.now())
+  const responseNow = yield* Clock.currentTimeMillis
+  const classification = classifyUpstreamResponse(upstream.status, upstream.headers, responseNow)
   yield* dependencies.router
-    .recordResponse(lease.accountId, credential.generation, classification, Date.now())
+    .recordResponse(lease.accountId, credential.generation, classification, responseNow)
     .pipe(
       Effect.catchCause(() =>
         dependencies.telemetry.bookkeepingFailure({
@@ -180,18 +187,23 @@ const routeRequest = Effect.fn("routeRequest")(function* (
       statusText: upstream.statusText
     })
   }
-  return new Response(streamWithLease(upstream.body, dependencies.router, lease), {
-    headers,
-    status: upstream.status,
-    statusText: upstream.statusText
-  })
+  return new Response(
+    streamWithLease(upstream.body, dependencies.router, lease, responseNow, runPromise),
+    {
+      headers,
+      status: upstream.status,
+      statusText: upstream.statusText
+    }
+  )
 })
 
-export const makeRouterFetch = Effect.fn("makeRouterFetch")(function* () {
+export const makeRouterHttpHandler = Effect.fn("makeRouterHttpHandler")(function* () {
   const authenticator = yield* ClientAuthenticator
   const router = yield* SubscriptionRouter
   const telemetry = yield* GatewayTelemetry
   const transport = yield* UpstreamTransport
+  const context = yield* Effect.context<never>()
+  const runPromise = Effect.runPromiseWith(context)
   const dependencies: RouteDependencies = {
     authenticator,
     router,
@@ -199,10 +211,14 @@ export const makeRouterFetch = Effect.fn("makeRouterFetch")(function* () {
     transport
   }
 
-  return (request: Request): Promise<Response> =>
-    Effect.runPromise(
-      routeRequest(request, dependencies).pipe(
-        Effect.catchCause(() => Effect.succeed(jsonResponse(500, "internal_error")))
-      )
+  return makeRawWebHandler((request) =>
+    routeRequest(request, dependencies, runPromise).pipe(
+      Effect.catchCause(() => Effect.succeed(jsonResponse(500, "internal_error")))
     )
+  )
+})
+
+export const makeRouterFetch = Effect.fn("makeRouterFetch")(function* () {
+  const handler = yield* makeRouterHttpHandler()
+  return HttpEffect.toWebHandler(handler)
 })
