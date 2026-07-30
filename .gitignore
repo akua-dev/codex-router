@@ -1,0 +1,11 @@
+node_modules/
+.wrangler/
+coverage/
+dist/
+.env
+.env.*
+!.env.example
+.dev.vars
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

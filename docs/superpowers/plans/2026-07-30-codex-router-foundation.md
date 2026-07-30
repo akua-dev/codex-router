@@ -1,41 +1,34 @@
 # Codex Router Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use
-> superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development
+> (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build and publish the tested Effect-first Codex Router foundation with
-portable routing/protocol packages and working Cloudflare Worker and Bun
-adapters.
+**Goal:** Build and publish the tested Effect-first Codex Router foundation with portable
+routing/protocol packages and working Cloudflare Worker and Bun adapters.
 
-**Architecture:** A Bun workspace keeps routing policy and Web Platform request
-handling independent of runtime APIs. Effect services and layers supply
-strongly consistent routing state, credentials, quota probes, transport, and
-telemetry; Cloudflare Durable Object and Bun SQLite implementations satisfy the
-same contracts.
+**Architecture:** A Bun workspace keeps routing policy and Web Platform request handling independent
+of runtime APIs. Effect services and layers supply strongly consistent routing state, credentials,
+quota probes, transport, and telemetry; Cloudflare Durable Object and Bun SQLite implementations
+satisfy the same contracts.
 
-**Tech Stack:** Bun 1.4, TypeScript 7, Effect 4 beta, `@effect/vitest`, Vitest,
-SQLite, Cloudflare Workers, Durable Objects, Wrangler, Web Crypto.
+**Tech Stack:** Bun 1.4, TypeScript 7, Effect 4 beta, `@effect/vitest`, Vitest, SQLite, Cloudflare
+Workers, Durable Objects, Wrangler, Web Crypto.
 
 ## Global Constraints
 
 - Install the exact `effect@beta` and aligned `@effect/*@beta` versions.
 - Use Bun for package management, scripts, tests, and the portable server.
-- Use strict TypeScript with no `any`, casts, namespaces, or unchecked external
-  input.
-- Keep `packages/core` and `packages/codex` free of Bun, Node, and Cloudflare
-  imports.
+- Use strict TypeScript with no `any`, casts, namespaces, or unchecked external input.
+- Keep `packages/core` and `packages/codex` free of Bun, Node, and Cloudflare imports.
 - Authenticate before consuming a request body.
-- Never persist or log credentials, prompts, responses, authorization headers,
-  provider account IDs, or full upstream errors.
+- Never persist or log credentials, prompts, responses, authorization headers, provider account IDs,
+  or full upstream errors.
 - Never buffer, clone for reading, or semantically rewrite upstream streams.
 - Never replay a request after upstream transmission.
 - Never use Workers KV for quota, leases, cooldowns, or session assignments.
-- HTTP and SSE are released; transparent Responses WebSockets are explicitly
-  unsupported.
-- Write each behavior test first and observe its expected failure before adding
-  production code.
+- HTTP and SSE are released; transparent Responses WebSockets are explicitly unsupported.
+- Write each behavior test first and observe its expected failure before adding production code.
 
 ---
 
@@ -59,8 +52,8 @@ SQLite, Cloudflare Workers, Durable Objects, Wrangler, Web Crypto.
 **Interfaces:**
 
 - Consumes: approved design and official `Effect-TS/skills`.
-- Produces: reproducible Bun workspace, official project skill, pinned Effect
-  source, and package import graph.
+- Produces: reproducible Bun workspace, official project skill, pinned Effect source, and package
+  import graph.
 
 - [ ] **Step 1: Install the official Effect skill**
 
@@ -71,8 +64,8 @@ bunx --bun skills add Effect-TS/skills \
   --skill effect-ts --agent codex --copy -y
 ```
 
-Expected: `.agents/skills/effect-ts/SKILL.md`, all official references, and
-`skills-lock.json` exist.
+Expected: `.agents/skills/effect-ts/SKILL.md`, all official references, and `skills-lock.json`
+exist.
 
 - [ ] **Step 2: Pin the Effect source prerequisite**
 
@@ -150,8 +143,8 @@ git commit -m "build: initialize Effect Bun workspace"
 **Interfaces:**
 
 - Produces:
-  - schema classes `UsageWindow`, `UsageSnapshot`, `Candidate`,
-    `CandidateExplanation`, and `SelectionDecision`
+  - schema classes `UsageWindow`, `UsageSnapshot`, `Candidate`, `CandidateExplanation`, and
+    `SelectionDecision`
   - branded schemas `AccountId`, `SessionKey`, and `LeaseToken`
   - `RoutingConfig` and `defaultRoutingConfig`
   - `selectAccount(input): Effect<SelectionDecision>`
@@ -162,7 +155,7 @@ Cover these concrete cases in `selection.test.ts` using `it.effect`:
 
 ```ts
 it.effect("keeps an eligible sticky account inside hysteresis", () =>
-  Effect.gen(function*() {
+  Effect.gen(function* () {
     const decision = yield* selectAccount({
       candidates: [candidateA, candidateB],
       config: defaultRoutingConfig,
@@ -175,10 +168,9 @@ it.effect("keeps an eligible sticky account inside hysteresis", () =>
 )
 ```
 
-Also assert rejection of reauthentication, active blocks, unknown usage, expired
-weekly reset, short headroom, weekly headroom, snapshots older than 24 hours,
-stale-data penalty, reset urgency, reservation-count tie breaks, and stable
-opaque-ID ties.
+Also assert rejection of reauthentication, active blocks, unknown usage, expired weekly reset, short
+headroom, weekly headroom, snapshots older than 24 hours, stale-data penalty, reset urgency,
+reservation-count tie breaks, and stable opaque-ID ties.
 
 - [ ] **Step 2: Run and observe RED**
 
@@ -192,16 +184,15 @@ Expected: failure because `packages/core/src/selection.ts` does not exist.
 
 - [ ] **Step 3: Implement schema-backed models and policy**
 
-Use `Schema.Class`, `Schema.TaggedClass`, branded strings, `Schema.optionalKey`,
-and a named `Effect.fn("selectAccount")`. Return stable reason and rejection
-codes. Apply:
+Use `Schema.Class`, `Schema.TaggedClass`, branded strings, `Schema.optionalKey`, and a named
+`Effect.fn("selectAccount")`. Return stable reason and rejection codes. Apply:
 
 ```ts
 const urgency = remainingWeekly / Math.max(0.25, hoursUntilReset)
 ```
 
-Use a five-point stale penalty, 24-hour maximum age, 10% short-window minimum,
-3% weekly minimum, and 10% hysteresis.
+Use a five-point stale penalty, 24-hour maximum age, 10% short-window minimum, 3% weekly minimum,
+and 10% hysteresis.
 
 - [ ] **Step 4: Run and observe GREEN**
 
@@ -246,21 +237,23 @@ git commit -m "feat(core): add quota-aware account selection"
 Tests must run concurrent acquisitions and verify:
 
 ```ts
-const leases = yield* Effect.all(
-  Array.from({ length: 20 }, (_, index) =>
-    state.acquire({
-      candidates,
-      now,
-      sessionKey: SessionKey.make(`session-${index}`)
-    })
-  ),
-  { concurrency: "unbounded" }
-)
+const leases =
+  yield *
+  Effect.all(
+    Array.from({ length: 20 }, (_, index) =>
+      state.acquire({
+        candidates,
+        now,
+        sessionKey: SessionKey.make(`session-${index}`)
+      })
+    ),
+    { concurrency: "unbounded" }
+  )
 assert.strictEqual(leases.filter(Option.isSome).length, 20)
 ```
 
-Also cover expired lease cleanup, assignment TTL, explicit-only stickiness,
-renewal, release, quota block replacement, and sanitized summaries.
+Also cover expired lease cleanup, assignment TTL, explicit-only stickiness, renewal, release, quota
+block replacement, and sanitized summaries.
 
 - [ ] **Step 2: Write failing classification tests**
 
@@ -282,9 +275,9 @@ Expected: missing service and classification modules.
 
 - [ ] **Step 4: Implement minimal Effect services**
 
-Use `Context.Service`, `Layer.effect`, `Ref` or `SynchronizedRef` for the test
-implementation, schema-backed typed errors, and `Effect.fn` business
-operations. Keep atomic acquisition inside one service method.
+Use `Context.Service`, `Layer.effect`, `Ref` or `SynchronizedRef` for the test implementation,
+schema-backed typed errors, and `Effect.fn` business operations. Keep atomic acquisition inside one
+service method.
 
 - [ ] **Step 5: Run and observe GREEN**
 
@@ -323,16 +316,15 @@ git commit -m "feat(core): add transactional routing contracts"
   - `resolveUpstreamTarget(path, accountKind)`
   - `extractSessionKey(headers)`
   - `sanitizeRequestHeaders` and `sanitizeResponseHeaders`
-  - Effect services `ClientAuthenticator`, `AccountDirectory`,
-    `UsageProbe`, `UpstreamTransport`, and `GatewayTelemetry`
+  - Effect services `ClientAuthenticator`, `AccountDirectory`, `UsageProbe`, `UpstreamTransport`,
+    and `GatewayTelemetry`
   - `makeRouterFetch(): Effect<(request: Request) => Promise<Response>>`
 
 - [ ] **Step 1: Write failing quota tests**
 
-Cover snake-case and camel-case usage shapes, second/millisecond reset
-normalization, 18,000-second and 604,800-second window classification,
-percentage clamping, credits, and rejection of unknown durations or malformed
-objects.
+Cover snake-case and camel-case usage shapes, second/millisecond reset normalization, 18,000-second
+and 604,800-second window classification, percentage clamping, credits, and rejection of unknown
+durations or malformed objects.
 
 - [ ] **Step 2: Run quota tests and observe RED**
 
@@ -344,27 +336,29 @@ Expected: missing usage module.
 
 - [ ] **Step 3: Implement quota decoding**
 
-Decode unknown values with Effect Schema and return a typed `UsageSnapshot`.
-Do not use casts or raw unchecked property access.
+Decode unknown values with Effect Schema and return a typed `UsageSnapshot`. Do not use casts or raw
+unchecked property access.
 
 - [ ] **Step 4: Write failing handler tests**
 
 Use a request body stream whose `pull` records access and assert:
 
 ```ts
-const response = await fetch(new Request(url, {
-  method: "POST",
-  body,
-  duplex: "half"
-}))
+const response = await fetch(
+  new Request(url, {
+    method: "POST",
+    body,
+    duplex: "half"
+  })
+)
 assert.strictEqual(response.status, 401)
 assert.isFalse(bodyWasPulled)
 ```
 
-Also test every supported path, unsupported methods, explicit session headers,
-256-character bounds, credential stripping, selected authorization injection,
-opaque SSE byte preservation, safe response headers, empty bodies, completion,
-cancellation, transport failure, bookkeeping failure, and compaction payloads.
+Also test every supported path, unsupported methods, explicit session headers, 256-character bounds,
+credential stripping, selected authorization injection, opaque SSE byte preservation, safe response
+headers, empty bodies, completion, cancellation, transport failure, bookkeeping failure, and
+compaction payloads.
 
 - [ ] **Step 5: Run handler tests and observe RED**
 
@@ -376,9 +370,9 @@ Expected: missing handler and service modules.
 
 - [ ] **Step 6: Implement one-shot transparent forwarding**
 
-Create the runtime once with `ManagedRuntime`. Acquire one lease, obtain one
-credential, perform one fetch, record only status/header bookkeeping, and wrap
-the body only to release the lease. Never read the body.
+Create the runtime once with `ManagedRuntime`. Acquire one lease, obtain one credential, perform one
+fetch, record only status/header bookkeeping, and wrap the body only to release the lease. Never
+read the body.
 
 - [ ] **Step 7: Run and observe GREEN**
 
@@ -387,8 +381,7 @@ bun test packages/codex
 bun run typecheck
 ```
 
-Expected: protocol tests pass and portable packages have no runtime-specific
-imports.
+Expected: protocol tests pass and portable packages have no runtime-specific imports.
 
 - [ ] **Step 8: Commit**
 
@@ -417,9 +410,8 @@ git commit -m "feat(codex): add transparent Responses routing"
 
 - [ ] **Step 1: Write failing SQLite contract tests**
 
-Run the same routing-state behaviors against a temporary SQLite database. Add a
-second instance pointed at the same file and prove transactionally visible
-leases and assignments.
+Run the same routing-state behaviors against a temporary SQLite database. Add a second instance
+pointed at the same file and prove transactionally visible leases and assignments.
 
 - [ ] **Step 2: Run and observe RED**
 
@@ -431,20 +423,19 @@ Expected: missing Bun SQLite adapter.
 
 - [ ] **Step 3: Implement SQLite transactions**
 
-Create versioned migrations and tables for assignments, reservations, blocks,
-and usage snapshots. Use one immediate transaction for acquisition and one
-statement batch for expiry cleanup. Parameterize all SQL.
+Create versioned migrations and tables for assignments, reservations, blocks, and usage snapshots.
+Use one immediate transaction for acquisition and one statement batch for expiry cleanup.
+Parameterize all SQL.
 
 - [ ] **Step 4: Write failing server smoke test**
 
-Build the Bun fetch composition with test layers and assert `/healthz`,
-authenticated `/status`, and one streamed `/responses` request.
+Build the Bun fetch composition with test layers and assert `/healthz`, authenticated `/status`, and
+one streamed `/responses` request.
 
 - [ ] **Step 5: Implement Bun composition**
 
-Decode environment through Schema, compose layers once, and expose both a fetch
-function and `Bun.serve` entrypoint. The default topology remains one replica
-when SQLite is on a PVC.
+Decode environment through Schema, compose layers once, and expose both a fetch function and
+`Bun.serve` entrypoint. The default topology remains one replica when SQLite is on a PVC.
 
 - [ ] **Step 6: Run and observe GREEN**
 
@@ -481,13 +472,13 @@ git commit -m "feat(bun): add SQLite server runtime"
 **Interfaces:**
 
 - Consumes: portable routing and Codex handler.
-- Produces: Worker fetch handler, SQLite Durable Object class, AES-GCM
-  credential cipher, and metadata-only AI Gateway transport.
+- Produces: Worker fetch handler, SQLite Durable Object class, AES-GCM credential cipher, and
+  metadata-only AI Gateway transport.
 
 - [ ] **Step 1: Write failing cipher tests**
 
-Generate a test key and assert ciphertext round-trip, random nonces, AAD-bound
-account IDs, wrong-key rejection, and secret redaction.
+Generate a test key and assert ciphertext round-trip, random nonces, AAD-bound account IDs,
+wrong-key rejection, and secret redaction.
 
 - [ ] **Step 2: Run and observe RED**
 
@@ -499,8 +490,8 @@ Expected: missing cipher module.
 
 - [ ] **Step 3: Implement Web Crypto cipher**
 
-Use AES-256-GCM with a 96-bit random nonce, explicit key version, account ID as
-additional authenticated data, and schema-decoded ciphertext envelopes.
+Use AES-256-GCM with a 96-bit random nonce, explicit key version, account ID as additional
+authenticated data, and schema-decoded ciphertext envelopes.
 
 - [ ] **Step 4: Write failing AI Gateway and Worker tests**
 
@@ -511,16 +502,15 @@ assert.strictEqual(headers.get("cf-aig-skip-cache"), "true")
 assert.strictEqual(headers.get("cf-aig-collect-log-payload"), "false")
 ```
 
-Assert the AI Gateway token is injected only inside the Worker, metadata omits
-credentials and payloads, bindings are schema-decoded, and Durable Object RPC
-occurs outside the streamed response path.
+Assert the AI Gateway token is injected only inside the Worker, metadata omits credentials and
+payloads, bindings are schema-decoded, and Durable Object RPC occurs outside the streamed response
+path.
 
 - [ ] **Step 5: Implement Worker adapters**
 
-Use Durable Object SQLite for the same routing-state contract. Keep RPC methods
-short. Create `wrangler.jsonc` with the Durable Object binding and migration,
-compatibility date `2026-07-30`, observability enabled, and no committed
-secrets.
+Use Durable Object SQLite for the same routing-state contract. Keep RPC methods short. Create
+`wrangler.jsonc` with the Durable Object binding and migration, compatibility date `2026-07-30`,
+observability enabled, and no committed secrets.
 
 - [ ] **Step 6: Verify the Worker**
 
@@ -553,23 +543,22 @@ git commit -m "feat(cloudflare): add Worker and Durable Object runtime"
 
 **Interfaces:**
 
-- Consumes: validated design, local Codex audit, AgentOS implementation
-  evidence, official Cloudflare/OpenAI/Effect documentation.
-- Produces: complete project vision, development rules, failure-mode catalogue,
-  operator runbook, and source-backed research record.
+- Consumes: validated design, local Codex audit, AgentOS implementation evidence, official
+  Cloudflare/OpenAI/Effect documentation.
+- Produces: complete project vision, development rules, failure-mode catalogue, operator runbook,
+  and source-backed research record.
 
 - [ ] **Step 1: Write `AGENTS.md`**
 
-Include the entire vision, runtime boundaries, Effect rules, compatibility
-contract, security invariants, request-volume baseline, Cloudflare limits,
-AgentOS/Pi learnings, forbidden mistakes, TDD commands, delivery rules, and
-documentation ownership.
+Include the entire vision, runtime boundaries, Effect rules, compatibility contract, security
+invariants, request-volume baseline, Cloudflare limits, AgentOS/Pi learnings, forbidden mistakes,
+TDD commands, delivery rules, and documentation ownership.
 
 - [ ] **Step 2: Write user and operator documentation**
 
-Document local Bun startup, Worker configuration, secrets, AI Gateway custom
-provider flow, Kubernetes/PVC posture, metadata-only logging, status endpoints,
-OAuth compatibility risk, canary metrics, rollback, and current limitations.
+Document local Bun startup, Worker configuration, secrets, AI Gateway custom provider flow,
+Kubernetes/PVC posture, metadata-only logging, status endpoints, OAuth compatibility risk, canary
+metrics, rollback, and current limitations.
 
 - [ ] **Step 3: Verify documentation**
 
@@ -582,8 +571,8 @@ rg -n 'authorization|refreshToken|accessToken|chatgpt-account-id' \
 bun run format:check
 ```
 
-Expected: no placeholders or credential examples; sensitive terms occur only in
-explicit prohibitions and architectural explanations.
+Expected: no placeholders or credential examples; sensitive terms occur only in explicit
+prohibitions and architectural explanations.
 
 - [ ] **Step 4: Commit**
 
@@ -648,4 +637,3 @@ gh-axi repo view -R akua-dev/codex-router
 ```
 
 Expected: local and remote `main` resolve to the same commit.
-

@@ -1,0 +1,9 @@
+{
+  "name": "@akua-dev/codex-router-worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@akua-dev/codex-router-cloudflare": "workspace:*"
+  }
+}
