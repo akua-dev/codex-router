@@ -1,6 +1,7 @@
 import {
   AccountDirectory,
   AdminAuthenticator,
+  AuthenticationError,
   ClientAuthenticator,
   CredentialUnavailableError,
   GatewayTelemetry,
@@ -15,6 +16,7 @@ import {
   makeCodexUsageProbe,
   makeFetchCodexControlTransport,
   makeOpenAiOAuthClient,
+  secureCompare,
   subscriptionRouterLayer
 } from "@akua-dev/codex-router-codex"
 import {
@@ -24,8 +26,8 @@ import {
   defaultRoutingConfig,
   type AccountId
 } from "@akua-dev/codex-router-core"
-import { timingSafeEqual } from "node:crypto"
-import { Effect, Layer, Redacted } from "effect"
+import * as BunCrypto from "@effect/platform-bun/BunCrypto"
+import { Crypto, Effect, Layer, Redacted } from "effect"
 import type { BunRuntimeConfig, ConfiguredAccount } from "./config.ts"
 import { bunMaintenanceLayer } from "./maintenance.ts"
 import { sqliteSubscriptionAccountStoreLayer } from "./sqlite-account-store.ts"
@@ -42,37 +44,53 @@ const bearerToken = (request: Request): string | undefined => {
   return undefined
 }
 
-const constantTimeEqual = (actual: string, expected: string): boolean => {
-  const actualBytes = Buffer.from(actual)
-  const expectedBytes = Buffer.from(expected)
-  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes)
-}
-
 export const bunClientAuthenticatorLayer = (config: BunRuntimeConfig) =>
-  Layer.succeed(
+  Layer.effect(
     ClientAuthenticator,
-    ClientAuthenticator.of({
-      authenticate: (request) =>
-        Effect.sync(() => {
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto
+      return ClientAuthenticator.of({
+        authenticate: (request) => {
           const actual = bearerToken(request)
-          return (
-            actual !== undefined && constantTimeEqual(actual, Redacted.value(config.clientToken))
+          if (actual === undefined) {
+            return Effect.succeed(false)
+          }
+          return secureCompare(actual, Redacted.value(config.clientToken)).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.mapError(
+              () =>
+                new AuthenticationError({
+                  message: "Client authentication could not be verified"
+                })
+            )
           )
-        })
+        }
+      })
     })
   )
 
 export const bunAdminAuthenticatorLayer = (config: BunRuntimeConfig) =>
-  Layer.succeed(
+  Layer.effect(
     AdminAuthenticator,
-    AdminAuthenticator.of({
-      authenticate: (request) =>
-        Effect.sync(() => {
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto
+      return AdminAuthenticator.of({
+        authenticate: (request) => {
           const actual = request.headers.get("x-ai-router-admin-token")?.trim()
-          return (
-            actual !== undefined && constantTimeEqual(actual, Redacted.value(config.adminToken))
+          if (actual === undefined || actual.length === 0) {
+            return Effect.succeed(false)
+          }
+          return secureCompare(actual, Redacted.value(config.adminToken)).pipe(
+            Effect.provideService(Crypto.Crypto, crypto),
+            Effect.mapError(
+              () =>
+                new AuthenticationError({
+                  message: "Administrator authentication could not be verified"
+                })
+            )
           )
-        })
+        }
+      })
     })
   )
 
@@ -179,10 +197,14 @@ export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
   ).pipe(Layer.provide(storage))
   const initializedStorage = Layer.merge(storage, seed)
   const controlTransport = makeFetchCodexControlTransport()
+  const authenticators = Layer.merge(
+    bunAdminAuthenticatorLayer(config),
+    bunClientAuthenticatorLayer(config)
+  ).pipe(Layer.provide(BunCrypto.layer))
   const dependencies = Layer.mergeAll(
     initializedStorage,
-    bunAdminAuthenticatorLayer(config),
-    bunClientAuthenticatorLayer(config),
+    BunCrypto.layer,
+    authenticators,
     bunUpstreamTransportLayer,
     bunGatewayTelemetryLayer,
     Layer.succeed(OAuthClient, makeOpenAiOAuthClient({ transport: controlTransport })),

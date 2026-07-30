@@ -1,5 +1,5 @@
 import { AccountId } from "@akua-dev/codex-router-core"
-import { Effect, Redacted, Schema } from "effect"
+import { Effect, Encoding, Redacted, Schema } from "effect"
 
 export const CredentialGeneration = Schema.Int.check(Schema.isGreaterThan(0))
 export type CredentialGeneration = typeof CredentialGeneration.Type
@@ -32,33 +32,25 @@ const JwtPayload = Schema.Struct({
   })
 })
 
-const decodeJwtPayload = Schema.decodeUnknownEffect(JwtPayload)
+const decodeJwtPayload = Schema.decodeUnknownEffect(Schema.fromJsonString(JwtPayload))
 
 const tokenFailure = () =>
   new InvalidCodexTokenError({
     message: "The Codex access token does not contain a usable account identity"
   })
 
-const decodeBase64Url = (value: string): Uint8Array => {
-  const base64 = value.replaceAll("-", "+").replaceAll("_", "/")
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4)
-  const binary = atob(base64 + padding)
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
-}
-
 export const extractProviderAccountId = Effect.fn("extractProviderAccountId")(function* (
   accessToken: string
 ) {
-  const payload = yield* Effect.try({
-    try: () => {
-      const parts = accessToken.split(".")
-      if (parts.length !== 3 || parts[1] === undefined) {
-        throw tokenFailure()
-      }
-      return JSON.parse(new TextDecoder().decode(decodeBase64Url(parts[1])))
-    },
-    catch: tokenFailure
-  })
-  const decoded = yield* decodeJwtPayload(payload).pipe(Effect.mapError(tokenFailure))
+  const parts = accessToken.split(".")
+  if (parts.length !== 3 || parts[1] === undefined) {
+    return yield* tokenFailure()
+  }
+  const payloadBytes = yield* Effect.fromResult(Encoding.decodeBase64Url(parts[1])).pipe(
+    Effect.mapError(tokenFailure)
+  )
+  const decoded = yield* decodeJwtPayload(new TextDecoder().decode(payloadBytes)).pipe(
+    Effect.mapError(tokenFailure)
+  )
   return Redacted.make(decoded["https://api.openai.com/auth"].chatgpt_account_id)
 })

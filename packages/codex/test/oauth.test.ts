@@ -5,6 +5,7 @@ import {
   DeviceAuthorization,
   DeviceAuthorizationPending,
   DeviceAuthorizationReady,
+  InvalidCodexTokenError,
   OAuthInvalidGrantError,
   ProviderIdentityChangedError,
   SubscriptionCredential,
@@ -53,6 +54,9 @@ describe("OpenAI Codex OAuth", () => {
       expect(JSON.stringify(identity)).not.toContain("provider-a")
       const error = yield* Effect.flip(extractProviderAccountId("not-a-token"))
       expect(error.message).not.toContain("not-a-token")
+      const malformedEncoding = yield* Effect.flip(extractProviderAccountId("a.b*.c"))
+      expect(malformedEncoding).toBeInstanceOf(InvalidCodexTokenError)
+      expect(malformedEncoding.message).not.toContain("b*")
     })
   )
 
