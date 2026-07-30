@@ -1,4 +1,5 @@
 export * from "./application.ts"
+export * from "./admin-client.ts"
 export * from "./config.ts"
 export * from "./layers.ts"
 export * from "./maintenance.ts"

@@ -14,6 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "start:bun": "bun run apps/server/src/main.ts",
+    "admin:bun": "bun run apps/server/src/admin.ts",
     "dev:worker": "wrangler dev --config apps/worker/wrangler.jsonc",
     "build:worker": "wrangler deploy --dry-run --config apps/worker/wrangler.jsonc",
     "deploy:worker": "wrangler deploy --config apps/worker/wrangler.jsonc",
