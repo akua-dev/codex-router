@@ -9,7 +9,7 @@ import {
   defaultRoutingConfig,
   inMemoryRoutingStateLayer
 } from "@akua-dev/codex-router-core"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Layer, Redacted, Result } from "effect"
 import {
   AccountDirectory,
   ClientAuthenticator,
@@ -274,6 +274,56 @@ const post = (path: string, body = "{}", headers: HeadersInit = {}) =>
 
 {
   const probe = makeProbe()
+  layer(makeTestLayer(probe))("opaque request ownership", (it) => {
+    it.effect(
+      "never decodes, clones, or tees the model request before its single transmission",
+      () =>
+        Effect.gen(function* () {
+          let forbiddenCalls = 0
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"opaque":true}'))
+              controller.close()
+            }
+          })
+          Object.defineProperty(body, "tee", {
+            value: () => {
+              forbiddenCalls += 1
+              throw new Error("request stream must not be teed")
+            }
+          })
+          const request = post("/responses")
+          Object.defineProperty(request, "body", { value: body })
+          for (const method of [
+            "arrayBuffer",
+            "blob",
+            "bytes",
+            "clone",
+            "formData",
+            "json",
+            "text"
+          ]) {
+            Object.defineProperty(request, method, {
+              value: () => {
+                forbiddenCalls += 1
+                throw new Error(`request.${method} must not be called`)
+              }
+            })
+          }
+
+          const fetch = yield* makeRouterFetch()
+          const response = yield* Effect.promise(() => fetch(request))
+
+          expect(response.status).toBe(204)
+          expect(forbiddenCalls).toBe(0)
+          expect(probe.requests).toHaveLength(1)
+        })
+    )
+  })
+}
+
+{
+  const probe = makeProbe()
   layer(makeTestLayer(probe, { transportFailure: true }))("transport failure", (it) => {
     it.effect("releases the lease and returns a gateway error before any response", () =>
       Effect.gen(function* () {
@@ -284,6 +334,39 @@ const post = (path: string, body = "{}", headers: HeadersInit = {}) =>
 
         expect(response.status).toBe(502)
         expect(summary.activeReservations).toBe(0)
+      })
+    )
+  })
+}
+
+{
+  const probe = makeProbe()
+  layer(
+    makeTestLayer(probe, {
+      response: () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            pull(controller) {
+              controller.error(new Error("upstream stream failed"))
+            }
+          }),
+          { status: 200 }
+        )
+    })
+  )("stream failure", (it) => {
+    it.effect("releases the lease after an upstream stream error without retransmitting", () =>
+      Effect.gen(function* () {
+        const fetch = yield* makeRouterFetch()
+        const response = yield* Effect.promise(() => fetch(post("/responses")))
+        const read = yield* Effect.result(
+          Effect.tryPromise(() => response.body!.getReader().read())
+        )
+        const state = yield* RoutingState
+        const summary = yield* state.summary(Date.now())
+
+        expect(Result.isFailure(read)).toBe(true)
+        expect(summary.activeReservations).toBe(0)
+        expect(probe.requests).toHaveLength(1)
       })
     )
   })
