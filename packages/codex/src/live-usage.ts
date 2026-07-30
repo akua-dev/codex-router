@@ -1,4 +1,4 @@
-import { type UsageSnapshot } from "@akua-dev/codex-router-core"
+import { type UsageSnapshot } from "../../core/src/index.ts"
 import { Clock, Context, Effect, Redacted, Schema } from "effect"
 import type { SubscriptionCredential } from "./credentials.ts"
 import type { CodexControlTransportShape } from "./control-transport.ts"

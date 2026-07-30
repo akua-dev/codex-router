@@ -1,10 +1,10 @@
-import { RoutingState } from "@akua-dev/codex-router-core"
+import { RoutingState } from "../../core/src/index.ts"
 import {
   ClientAuthenticator,
   makeAccountAdminHttpHandler,
   makeRawWebHandler,
   makeRouterHttpHandler
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer"
 import { Clock, Effect, Option, Result } from "effect"
 import * as Layer from "effect/Layer"

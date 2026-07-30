@@ -4,8 +4,8 @@ import {
   AccountAdminSummary,
   ProviderIdentityConflictError,
   type AccountAdminShape
-} from "@akua-dev/codex-router-codex"
-import type { AccountId } from "@akua-dev/codex-router-core"
+} from "../../codex/src/index.ts"
+import type { AccountId } from "../../core/src/index.ts"
 import { Effect, Option, Redacted, Schema } from "effect"
 import type { RouterStateStub } from "./config.ts"
 

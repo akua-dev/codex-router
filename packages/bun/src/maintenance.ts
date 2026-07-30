@@ -1,4 +1,4 @@
-import { SubscriptionRouter } from "@akua-dev/codex-router-codex"
+import { SubscriptionRouter } from "../../codex/src/index.ts"
 import { Clock, Effect, Layer, Schedule } from "effect"
 
 export const runBunMaintenanceIteration = Effect.fn("BunSubscriptionMaintenance.maintainOnce")(

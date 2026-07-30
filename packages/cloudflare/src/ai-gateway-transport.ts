@@ -2,7 +2,7 @@ import {
   TransportError,
   UpstreamTransport,
   type UpstreamTransport as UpstreamTransportService
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import { Effect, Redacted } from "effect"
 
 export type AiGatewayMetadataValue = string | number | boolean

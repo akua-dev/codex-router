@@ -4,8 +4,8 @@ import {
   type DeviceAuthorizationResult,
   type OAuthClientShape,
   type SubscriptionCredential
-} from "@akua-dev/codex-router-codex"
-import type { AccountId } from "@akua-dev/codex-router-core"
+} from "../../codex/src/index.ts"
+import type { AccountId } from "../../core/src/index.ts"
 import { Duration, Effect, Redacted, Schedule, Schema } from "effect"
 import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http"
 

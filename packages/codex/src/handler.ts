@@ -1,8 +1,4 @@
-import {
-  classifyUpstreamResponse,
-  type LeaseToken,
-  type RouteLease
-} from "@akua-dev/codex-router-core"
+import { classifyUpstreamResponse, type LeaseToken, type RouteLease } from "../../core/src/index.ts"
 import { Clock, Effect, Option, Redacted, Result } from "effect"
 import { HttpEffect } from "effect/unstable/http"
 import type { SubscriptionCredential } from "./credentials.ts"

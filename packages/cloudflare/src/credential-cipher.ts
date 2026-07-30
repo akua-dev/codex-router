@@ -1,4 +1,4 @@
-import type { AccountId } from "@akua-dev/codex-router-core"
+import type { AccountId } from "../../core/src/index.ts"
 import { Context, Crypto, Effect, Encoding, Redacted, Schema } from "effect"
 
 export class EncryptedCredentialEnvelope extends Schema.Class<EncryptedCredentialEnvelope>(

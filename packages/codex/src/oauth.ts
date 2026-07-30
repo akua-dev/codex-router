@@ -1,4 +1,4 @@
-import { AccountId, type AccountId as AccountIdType } from "@akua-dev/codex-router-core"
+import { AccountId, type AccountId as AccountIdType } from "../../core/src/index.ts"
 import { Clock, Context, Effect, Redacted, Schema } from "effect"
 import type { HttpClientResponse } from "effect/unstable/http"
 import {

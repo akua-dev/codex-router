@@ -5,7 +5,7 @@ import {
   type AccountId as AccountIdType,
   Candidate,
   type RoutingConfig
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import { Context, Crypto, Effect, Layer, Option, Schema, Semaphore } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 

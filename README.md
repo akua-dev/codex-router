@@ -209,14 +209,34 @@ Tunnel sidecar.
 
 ## Packages
 
-- `@akua-dev/codex-router-core` — quota policy, state models, selection, classifications;
-- `@akua-dev/codex-router-codex` — OAuth, usage, account lifecycle, protocol, opaque handler;
-- `@akua-dev/codex-router-bun` — Effect SQLite, scheduled maintenance, official Bun HTTP
+- `@akua-dev/codex-router/core` — quota policy, state models, selection, classifications;
+- `@akua-dev/codex-router/codex` — OAuth, usage, account lifecycle, protocol, opaque handler;
+- `@akua-dev/codex-router/bun` — Effect SQLite, scheduled maintenance, official Bun HTTP
   server/admin client;
-- `@akua-dev/codex-router-cloudflare` — Effect Durable Object SQLite/migrations, vault, Worker, AI
+- `@akua-dev/codex-router/cloudflare` — Effect Durable Object SQLite/migrations, vault, Worker, AI
   Gateway adapters;
-- `@akua-dev/codex-router-relay` — authenticated fixed-route Effect HTTP/Bun egress relay;
+- `@akua-dev/codex-router/relay` — authenticated fixed-route Effect HTTP/Bun egress relay;
 - `apps/server`, `apps/worker`, `apps/relay` — runtime composition roots.
+
+The root package is the public Git consumption boundary. Pin consumers to a full commit SHA:
+
+```json
+{
+  "dependencies": {
+    "@akua-dev/codex-router": "github:akua-dev/codex-router#<full-commit-sha>"
+  }
+}
+```
+
+```ts
+import { selectAccount } from "@akua-dev/codex-router/core"
+import { makeRouterFetch } from "@akua-dev/codex-router/codex"
+import { openSqliteRoutingState } from "@akua-dev/codex-router/bun"
+```
+
+Bun installs the repository root but does not expose child workspaces as independent packages. Use
+the root subpaths above; do not depend on a child package URL, GitHub subdirectory proxy, branch,
+tag, or short SHA. The root stays `private: true` only to prevent accidental npm publication.
 
 The official Effect agent skill is vendored at `.agents/skills/effect-ts`; the matching source
 checkout is pinned at `.repos/effect`. Read [AGENTS.md](AGENTS.md) before changing the repository.

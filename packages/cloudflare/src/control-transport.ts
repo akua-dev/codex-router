@@ -3,7 +3,7 @@ import {
   CodexControlTransportError,
   makeHttpClientCodexControlTransport,
   type CodexControlTransportShape
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import { Effect, Redacted } from "effect"
 import { HttpClient } from "effect/unstable/http"
 import type { WorkerRuntimeConfig } from "./config.ts"

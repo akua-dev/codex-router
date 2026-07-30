@@ -7,7 +7,7 @@ import {
   type RoutingSummary,
   type SessionKey as SessionKeyType,
   type UpstreamResponseClassification
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import { Context, Effect, Option, Schema } from "effect"
 import { SubscriptionCredential, type CredentialGeneration } from "./credentials.ts"
 

@@ -6,7 +6,7 @@ import {
   makeCodexUsageProbe,
   makeOpenAiOAuthClient,
   secureCompare
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import {
   AccountId,
   Candidate,
@@ -14,7 +14,7 @@ import {
   UsageWindow,
   defaultRoutingConfig,
   type AccountId as AccountIdType
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import type { DurableObjectStorage } from "@cloudflare/workers-types"
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
 import * as SqliteClient from "@effect/sql-sqlite-do/SqliteClient"

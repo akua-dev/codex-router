@@ -79,8 +79,8 @@ Consumers use a full commit SHA:
 They import only the facade subpaths. A branch, tag, short SHA, child workspace URL, GitHub
 subdirectory proxy, or registry proxy is not the production contract.
 
-The repository remains marked `private: true` in `package.json` to prevent accidental publication
-to npm. GitHub repository visibility is independent of npm publication.
+The repository remains marked `private: true` in `package.json` to prevent accidental publication to
+npm. GitHub repository visibility is independent of npm publication.
 
 ## AgentOS Integration
 
@@ -116,7 +116,8 @@ The change is accepted only when:
    every facade subpath without workspace links;
 3. `bun run check` and `git diff --check` pass in `codex-router`;
 4. AgentOS has no tracked `vendor/codex-router` files or stale workspace dependency names;
-5. AgentOS focused AI Gateway, telemetry, compaction, package-integration, and Kubernetes tests pass;
+5. AgentOS focused AI Gateway, telemetry, compaction, package-integration, and Kubernetes tests
+   pass;
 6. the existing AgentOS PR head is updated and ordinary PR CI is green.
 
 Repository visibility changes only after a tracked-file and history secret audit. No PR is opened

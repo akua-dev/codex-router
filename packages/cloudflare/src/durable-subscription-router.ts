@@ -4,13 +4,13 @@ import {
   SubscriptionRouter,
   SubscriptionRouterError,
   type SubscriptionRouterShape
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import {
   AccountId,
   LeaseToken,
   RouteLease,
   type UpstreamResponseClassification
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import { Effect, Layer, Option, Schema } from "effect"
 import type { RouterStateStub } from "./config.ts"
 import {

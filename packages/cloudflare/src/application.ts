@@ -8,7 +8,7 @@ import {
   UpstreamTransport,
   secureCompare,
   type RouterFetch
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
 import { Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { makeAiGatewayTransport } from "./ai-gateway-transport.ts"

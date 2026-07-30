@@ -18,14 +18,14 @@ import {
   makeOpenAiOAuthClient,
   secureCompare,
   subscriptionRouterLayer
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import {
   Candidate,
   UsageSnapshot,
   UsageWindow,
   defaultRoutingConfig,
   type AccountId
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import * as BunCrypto from "@effect/platform-bun/BunCrypto"
 import * as BunHttpClient from "@effect/platform-bun/BunHttpClient"
 import { Crypto, Effect, Layer, Redacted } from "effect"

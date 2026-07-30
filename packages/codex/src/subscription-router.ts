@@ -3,8 +3,8 @@ import type {
   LeaseToken,
   SessionKey,
   UpstreamResponseClassification
-} from "@akua-dev/codex-router-core"
-import { RoutingState } from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
+import { RoutingState } from "../../core/src/index.ts"
 import { Context, Effect, Layer, Option, Result, Schedule, Schema } from "effect"
 import {
   MaintenanceResult,

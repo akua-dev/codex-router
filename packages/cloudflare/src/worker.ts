@@ -1,4 +1,4 @@
-import { RoutingState } from "@akua-dev/codex-router-core"
+import { RoutingState } from "../../core/src/index.ts"
 import {
   AdminAuthenticator,
   ClientAuthenticator,
@@ -7,7 +7,7 @@ import {
   makeRouterHttpHandler,
   type RouterFetch,
   UpstreamTransport
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import { Clock, Effect, Option, Result } from "effect"
 import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 import { CredentialKeyAdmin } from "./credential-key-admin.ts"

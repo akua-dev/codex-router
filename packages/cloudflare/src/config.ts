@@ -1,4 +1,4 @@
-import { AccountId } from "@akua-dev/codex-router-core"
+import { AccountId } from "../../core/src/index.ts"
 import { Effect, Encoding, Redacted, Result, Schema } from "effect"
 
 export interface RouterStateStub {

@@ -9,7 +9,7 @@ import {
   defaultRoutingConfig,
   type AccountId as AccountIdType,
   type RoutingConfig
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import {
   RefreshClaim,
   RefreshClaimToken,
@@ -19,7 +19,7 @@ import {
   SubscriptionCredential,
   SubscriptionRouteGrant,
   type SubscriptionAccountStoreShape
-} from "@akua-dev/codex-router-codex"
+} from "../../codex/src/index.ts"
 import { Clock, Crypto, Effect, Layer, Option, Redacted, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { subscriptionMigrations } from "./migrations.ts"

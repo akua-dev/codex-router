@@ -4,13 +4,17 @@
   "workspaces": {
     "": {
       "name": "@akua-dev/codex-router",
-      "devDependencies": {
-        "@cloudflare/workers-types": "5.20260730.1",
+      "dependencies": {
+        "@effect/platform-browser": "4.0.0-beta.102",
         "@effect/platform-bun": "4.0.0-beta.102",
         "@effect/sql-sqlite-bun": "4.0.0-beta.102",
+        "@effect/sql-sqlite-do": "4.0.0-beta.102",
+        "effect": "4.0.0-beta.102",
+      },
+      "devDependencies": {
+        "@cloudflare/workers-types": "5.20260730.1",
         "@effect/vitest": "4.0.0-beta.102",
         "@types/bun": "1.3.14",
-        "effect": "4.0.0-beta.102",
         "oxlint": "1.76.0",
         "prettier": "3.9.6",
         "typescript": "7.0.2",

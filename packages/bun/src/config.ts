@@ -1,4 +1,4 @@
-import { AccountId } from "@akua-dev/codex-router-core"
+import { AccountId } from "../../core/src/index.ts"
 import { Effect, Redacted, Schema } from "effect"
 
 export class ConfiguredAccount extends Schema.Class<ConfiguredAccount>("ConfiguredAccount")({

@@ -1,5 +1,5 @@
-import { SubscriptionCredential, type CredentialGeneration } from "@akua-dev/codex-router-codex"
-import type { AccountId } from "@akua-dev/codex-router-core"
+import { SubscriptionCredential, type CredentialGeneration } from "../../codex/src/index.ts"
+import type { AccountId } from "../../core/src/index.ts"
 import { Effect, Redacted, Schema } from "effect"
 
 const CredentialBundle = Schema.Struct({

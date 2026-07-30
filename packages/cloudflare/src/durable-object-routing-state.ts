@@ -8,7 +8,7 @@ import {
   RoutingSummary,
   type AcquireRouteInput,
   type RoutingStateShape
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import { Effect, Layer, Option, Schema } from "effect"
 import type { RouterStateStub } from "./config.ts"
 

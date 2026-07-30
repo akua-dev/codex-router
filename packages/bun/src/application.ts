@@ -6,8 +6,8 @@ import {
   GatewayTelemetry,
   UpstreamTransport,
   type RouterFetch
-} from "@akua-dev/codex-router-codex"
-import { RoutingState } from "@akua-dev/codex-router-core"
+} from "../../codex/src/index.ts"
+import { RoutingState } from "../../core/src/index.ts"
 import { ManagedRuntime } from "effect"
 import type { BunRuntimeConfig } from "./config.ts"
 import { bunRuntimeLayer } from "./layers.ts"

@@ -1,4 +1,4 @@
-import { originalWebRequest, secureCompare } from "@akua-dev/codex-router-codex"
+import { originalWebRequest, secureCompare } from "../../codex/src/index.ts"
 import { Crypto, Effect, Layer, Redacted, Result, Stream } from "effect"
 import { HttpEffect, HttpRouter, HttpServerResponse } from "effect/unstable/http"
 

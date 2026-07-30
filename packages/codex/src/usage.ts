@@ -3,7 +3,7 @@ import {
   UsageSnapshot,
   UsageWindow,
   type AccountId as AccountIdType
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import { Effect, Schema } from "effect"
 
 const shortWindowSeconds = 18_000

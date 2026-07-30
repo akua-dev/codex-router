@@ -21,24 +21,29 @@ subscription quota.
 ## Portable dependency boundary
 
 ```text
-@akua-dev/codex-router-core
+@akua-dev/codex-router/core
               ^
               |
-@akua-dev/codex-router-codex
+@akua-dev/codex-router/codex
               ^
               |
-       +------+-----------------+
-       |                        |
-@akua-dev/codex-router-bun   @akua-dev/codex-router-cloudflare
-       |                        |
- apps/server                apps/worker
-
-@akua-dev/codex-router-relay -> apps/relay
+       +------+----------------------+----------------+
+       |                             |                |
+@akua-dev/codex-router/bun   @akua-dev/codex-router/cloudflare
+       |                             |                |
+ apps/server                     apps/worker          |
+                                                     |
+                         @akua-dev/codex-router/relay -> apps/relay
 ```
 
 `core` and `codex` contain no Cloudflare, Wrangler, Bun, Node, filesystem, or Kubernetes imports.
 They model behavior as Effect services. Runtime packages implement the ports and own persistence,
 scheduling, crypto, and process/runtime boundaries.
+
+The public Git dependency is the root `@akua-dev/codex-router` package. Its subpath exports point at
+these source entry points so Bun and Wrangler consumers need no generated distribution or child
+workspace installation. Internal production imports follow the same dependency arrows with relative
+public-index imports, which keeps a clean Git checkout self-contained.
 
 The relay is separate because it is only a fixed-route transport bridge. It never owns selection,
 usage, refresh, leases, or assignments.

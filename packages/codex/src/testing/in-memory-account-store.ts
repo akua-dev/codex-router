@@ -4,7 +4,7 @@ import {
   UpstreamResponseClassification,
   type AccountId,
   type UsageSnapshot
-} from "@akua-dev/codex-router-core"
+} from "../../../core/src/index.ts"
 import { Effect, Layer, Option, Redacted, SynchronizedRef } from "effect"
 import {
   RefreshClaim,

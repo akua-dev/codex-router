@@ -1,4 +1,4 @@
-import type { AccountId, Candidate, SelectionReason, SessionKey } from "@akua-dev/codex-router-core"
+import type { AccountId, Candidate, SelectionReason, SessionKey } from "../../core/src/index.ts"
 import { Context, Effect, Option, Schema } from "effect"
 import type { SubscriptionCredential } from "./credentials.ts"
 

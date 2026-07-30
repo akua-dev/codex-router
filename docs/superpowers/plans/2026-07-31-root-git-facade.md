@@ -3,9 +3,9 @@
 **Goal:** Make the public `codex-router` repository directly consumable as one full-SHA-pinned Bun
 Git dependency, then replace AgentOS PR #70's vendored snapshot with that canonical package.
 
-**Architecture:** Export the existing private workspace entry points through the root package,
-make production cross-package imports self-contained, and keep runtime-specific code behind
-explicit Bun and Cloudflare subpaths. AgentOS remains a thin consumer.
+**Architecture:** Export the existing private workspace entry points through the root package, make
+production cross-package imports self-contained, and keep runtime-specific code behind explicit Bun
+and Cloudflare subpaths. AgentOS remains a thin consumer.
 
 **Tech Stack:** Bun, TypeScript, Effect `4.0.0-beta.102`, Vitest, GitHub Git dependencies,
 Cloudflare Workers, AgentOS AI Gateway.

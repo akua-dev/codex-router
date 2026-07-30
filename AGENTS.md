@@ -77,12 +77,24 @@ Dependency flow:
 core <- codex <- bun app
               <- cloudflare app
 
-relay <- relay app
+codex <- relay <- relay app
 ```
 
 `packages/core` and `packages/codex` must not import Bun, Node, Cloudflare, Wrangler, filesystem,
 Kubernetes, or relay code. Runtime specifics stay behind ports. AgentOS must import portable
 packages instead of copying policy.
+
+The public external dependency is the repository root package, installed from Git at a full commit
+SHA. Its supported entry points are `@akua-dev/codex-router/core`, `/codex`, `/bun`, `/cloudflare`,
+and `/relay`. Bun does not create independently resolvable child workspaces when it installs a Git
+repository, so production source crossing an internal package boundary must import the dependency
+package's public source index by relative path. Do not reach into implementation files. Keep the
+child workspace manifests private for local development and never add a divergent consumer snapshot,
+GitHub subdirectory proxy, or registry proxy.
+
+The root manifest owns the aligned runtime Effect dependency union needed by every exported entry
+point. Keep `private: true` to prevent accidental npm publication; it does not make the public
+GitHub repository private.
 
 ## Effect engineering contract
 

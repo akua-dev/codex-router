@@ -16,7 +16,7 @@ import {
   type RoutingConfig,
   type RoutingStateShape,
   type SessionKey as SessionKeyType
-} from "@akua-dev/codex-router-core"
+} from "../../core/src/index.ts"
 import * as BunCrypto from "@effect/platform-bun/BunCrypto"
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient"
 import * as SqliteMigrator from "@effect/sql-sqlite-bun/SqliteMigrator"

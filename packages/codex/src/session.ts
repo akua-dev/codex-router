@@ -1,4 +1,4 @@
-import { SessionKey } from "@akua-dev/codex-router-core"
+import { SessionKey } from "../../core/src/index.ts"
 import { Effect, Option, Schema } from "effect"
 
 const sessionHeaders = [

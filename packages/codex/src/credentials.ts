@@ -1,4 +1,4 @@
-import { AccountId } from "@akua-dev/codex-router-core"
+import { AccountId } from "../../core/src/index.ts"
 import { Effect, Encoding, Redacted, Schema } from "effect"
 
 export const CredentialGeneration = Schema.Int.check(Schema.isGreaterThan(0))
