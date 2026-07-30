@@ -228,16 +228,25 @@ describe("selectAccount", () => {
     Effect.gen(function* () {
       const failure = yield* Effect.flip(
         selectAccount({
-          candidates: [candidate("unknown", { usage: false })],
+          candidates: [
+            candidate("unknown", { usage: false }),
+            candidate("short-exhausted", { shortUsed: 91 })
+          ],
           config: defaultRoutingConfig,
           now
         })
       )
 
       expect(failure).toBeInstanceOf(NoEligibleAccountsError)
-      expect(failure.explanations).toHaveLength(1)
-      expect(failure.explanations[0]?.accountId).toBe("unknown")
-      expect(failure.explanations[0]?.rejection.valueOrUndefined).toBe("usage_unknown")
+      expect(
+        failure.explanations.map((explanation) => [
+          explanation.accountId,
+          Option.getOrUndefined(explanation.rejection)
+        ])
+      ).toEqual([
+        [AccountId.make("unknown"), "usage_unknown"],
+        [AccountId.make("short-exhausted"), "short_headroom"]
+      ])
     })
   )
 })
