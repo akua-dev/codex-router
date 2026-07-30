@@ -19,6 +19,25 @@ Codex / synthetic client
 Current production Worker version under the final synthetic canary:
 `d7e1b929-9196-42df-a1b0-cfbbaf228826`.
 
+## Root facade follow-up deployment
+
+The source-only root Git package facade at commit `489557ad72774fd0dd67f3fdec402fc246d5256e` changed
+internal package import specifiers without changing Worker behavior. Wrangler deployed that verified
+source on 2026-07-30 at 22:50 UTC:
+
+- Worker version `dcbeace3-e345-4a9b-958a-dc7cc475e036`;
+- `https://codex-router.robinbraemer.workers.dev`;
+- `https://codex-router.akua.dev`;
+- the existing once-per-minute scheduled trigger.
+
+At 22:51 UTC, `GET https://codex-router.akua.dev/healthz` returned HTTP 200 with `{"status":"ok"}`.
+Wrangler's deployment list confirmed the new version at 100% traffic.
+
+The current shell had no client, administrator, or Cloudflare AI Gateway inspection credential, so
+it did not repeat authenticated status, synthetic SSE, or payload-privacy canaries. The complete
+authenticated evidence below remains scoped to version `d7e1b929-9196-42df-a1b0-cfbbaf228826`; this
+section makes no model-path claim for the packaging-only follow-up version.
+
 Relay image under the recorded canaries:
 `ghcr.io/akua-dev/codex-router-relay@sha256:83d6a388dc003cd50d3734be96bf79274f36fc061fff530c24431a2e66a0fd17`.
 
