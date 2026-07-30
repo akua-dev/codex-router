@@ -17,10 +17,14 @@ Codex / synthetic client
 ```
 
 Current production Worker version under the final synthetic canary:
-`769d9112-c86d-4c7e-b1b0-ec312366c2e6`.
+`d7e1b929-9196-42df-a1b0-cfbbaf228826`.
 
 Relay image under the recorded canaries:
-`ghcr.io/akua-dev/codex-router-relay@sha256:8989bcc03834752ce1b0fe67faefe15bca767760939ad0bea93cd2ff0d83ed30`.
+`ghcr.io/akua-dev/codex-router-relay@sha256:83d6a388dc003cd50d3734be96bf79274f36fc061fff530c24431a2e66a0fd17`.
+
+This release runs the portable HTTP application on Effect HTTP, the relay and standalone service on
+the official Bun runtime/server/platform layers, Durable Object persistence on the official Effect
+SQLite client and migrator, and both Bun repositories on a shared official Effect SQLite client.
 
 ## Synthetic SSE
 
@@ -37,21 +41,21 @@ The deployed Worker canary made exactly one request and received:
 ```json
 {
   "bytes": 62,
-  "firstByteMs": 427.286791,
+  "firstByteMs": 487.52549999999997,
   "requestCount": 1,
   "status": 200,
-  "totalMs": 531.2018330000001
+  "totalMs": 586.5805
 }
 ```
 
 The client’s bytes matched the fixture exactly and the first byte arrived before completion.
 
-AI Gateway log `01KYSTG4C0ZB12VBW3PVX3NBWJ` recorded:
+AI Gateway log `01KYT0BDZJ33W38W9GVQ572YC4` recorded:
 
-- timestamp `2026-07-30T15:32:44.469Z`;
+- timestamp `2026-07-30T17:15:02.034Z`;
 - status 200;
 - custom-provider path ending in `/synthetic/sse`;
-- duration 242 ms;
+- duration 275 ms;
 - cache miss / not cached;
 - metadata `protocol=responses`, `runtime=cloudflare`;
 - stored request length 0;
@@ -87,7 +91,7 @@ enabled and did not require reauthentication.
 
 ## Minimal real Codex response
 
-A Codex CLI custom provider was configured on Worker version `4ba697b0-f6f2-47ed-8232-2016cfd8dc58`
+A Codex CLI custom provider was configured on Worker version `d7e1b929-9196-42df-a1b0-cfbbaf228826`
 with:
 
 - router authentication from an environment-backed header;
@@ -98,16 +102,15 @@ with:
 
 The final canary returned exactly `OK`, once, with no CLI error.
 
-The subsequent production change removed only the unused non-subscription upstream branch. The final
-relay rebuild changed dependency installation scope, not relay runtime source. The final synthetic
-canary exercises that released Worker/relay pair.
+The final canary exercises the released Effect HTTP/SQL/Clock/Crypto runtime and the rebuilt
+Effect/Bun relay pair.
 
-AI Gateway log `01KYSSA38R3KWKGBJA6B3ZK8KV` recorded:
+AI Gateway log `01KYT0FMSFCW9XVHS4KKRFWMXF` recorded:
 
-- timestamp `2026-07-30T15:11:59.702Z`;
+- timestamp `2026-07-30T17:17:21.970Z`;
 - status 200;
 - custom-provider path ending in `/backend-api/codex/responses`;
-- duration 1,692 ms;
+- duration 2,182 ms;
 - not cached;
 - metadata `protocol=responses`, `runtime=cloudflare`;
 - stored request length 0;
@@ -125,15 +128,22 @@ After completion, sanitized router status showed:
 
 Cloudflare GraphQL Analytics was queried through the Cloudflare MCP/API connection.
 
-The final production Worker version recorded this post-deploy synthetic/status/maintenance smoke:
+The current production Worker version recorded this deploy, synthetic, real-response, status, and
+maintenance smoke:
 
 | Minute | Successful invocations |   CPU sum |   CPU p50 |   CPU p99 | Subrequests |
 | ------ | ---------------------: | --------: | --------: | --------: | ----------: |
-| 15:32  |                      3 | 30.802 ms | 14.636 ms | 15.047 ms |           2 |
-| 15:33  |                      1 | 19.950 ms | 19.950 ms | 19.950 ms |           1 |
+| 17:14  |                      1 | 24.592 ms | 24.592 ms | 24.592 ms |           1 |
+| 17:15  |                      3 | 99.649 ms | 32.407 ms | 39.389 ms |           3 |
+| 17:16  |                      1 | 17.651 ms | 17.651 ms | 17.651 ms |           1 |
+| 17:17  |                      3 | 75.242 ms | 24.135 ms | 38.846 ms |           6 |
 
-All four invocations succeeded with zero runtime errors. Their aggregate CPU was 50.752 ms, or
-12.688 ms per invocation.
+All eight invocations succeeded with zero runtime errors. Their aggregate CPU was 217.134 ms, or
+27.142 ms per invocation. Peak observed p99 was 39.389 ms.
+
+For the current version’s `global` Durable Object, the same window recorded nine successful
+invocations with zero errors. Periodic telemetry recorded 97.646 ms CPU, 69 rows read, 19 rows
+written, two subrequests, zero exceeded-CPU errors, and zero fatal-internal errors.
 
 The fuller real-canary Worker version `4ba697b0-f6f2-47ed-8232-2016cfd8dc58` recorded:
 
@@ -160,8 +170,8 @@ There were no Durable Object fatal internal errors in these groups. CPU and row 
 Cloudflare’s adaptive/periodic datasets and are subject to its documented analytics aggregation and
 sampling behavior.
 
-The final post-deploy Durable Object smoke added two successful requests, 24.740 ms periodic CPU, 27
-rows read, five rows written, one subrequest, and zero exceeded-CPU or fatal-internal errors.
+The earlier post-deploy Durable Object smoke added two successful requests, 24.740 ms periodic CPU,
+27 rows read, five rows written, one subrequest, and zero exceeded-CPU or fatal-internal errors.
 
 ## Result
 

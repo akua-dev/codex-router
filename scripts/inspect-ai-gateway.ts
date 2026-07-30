@@ -1,4 +1,7 @@
-import { Effect, Redacted, Schema } from "effect"
+import * as BunHttpClient from "@effect/platform-bun/BunHttpClient"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import { Console, Effect, Redacted, Schema } from "effect"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 
 class InspectionError extends Schema.TaggedErrorClass<InspectionError>()("InspectionError", {
   message: Schema.String
@@ -66,40 +69,36 @@ const cloudflareGet = Effect.fn("cloudflareGet")(function* <A, I, R>(
   token: Redacted.Redacted<string>,
   schema: Schema.Codec<A, I, R>
 ) {
-  const response = yield* Effect.tryPromise({
-    try: () =>
-      fetch(`https://api.cloudflare.com/client/v4${path}`, {
-        headers: { authorization: `Bearer ${Redacted.value(token)}` }
-      }),
-    catch: failure
-  })
-  if (!response.ok) {
+  const client = yield* HttpClient.HttpClient
+  const request = HttpClientRequest.get(`https://api.cloudflare.com/client/v4${path}`).pipe(
+    HttpClientRequest.bearerToken(token)
+  )
+  const response = yield* client.execute(request).pipe(Effect.mapError(failure))
+  if (response.status < 200 || response.status >= 300) {
     return yield* failure()
   }
-  const body = yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: failure
-  })
+  const body = yield* response.json.pipe(Effect.mapError(failure))
   return yield* Schema.decodeUnknownEffect(schema)(body).pipe(Effect.mapError(failure))
 })
 
-const main = Effect.gen(function* () {
-  const environment = yield* Schema.decodeUnknownEffect(Environment)(process.env).pipe(
-    Effect.mapError(failure)
-  )
-  const token = Redacted.make(environment.CLOUDFLARE_API_TOKEN)
+export const inspectAiGatewayLog = Effect.fn("inspectAiGatewayLog")(function* (options: {
+  readonly accountId: string
+  readonly gatewayId: string
+  readonly logId?: string
+  readonly token: Redacted.Redacted<string>
+}) {
   const root =
-    `/accounts/${encodeURIComponent(environment.CF_ACCOUNT_ID)}` +
-    `/ai-gateway/gateways/${encodeURIComponent(environment.CF_AIG_GATEWAY_ID)}/logs`
+    `/accounts/${encodeURIComponent(options.accountId)}` +
+    `/ai-gateway/gateways/${encodeURIComponent(options.gatewayId)}/logs`
   const logId =
-    environment.CF_AIG_LOG_ID ??
-    (yield* cloudflareGet(`${root}?page=1&per_page=1`, token, ListEnvelope)).result[0]?.id
+    options.logId ??
+    (yield* cloudflareGet(`${root}?page=1&per_page=1`, options.token, ListEnvelope)).result[0]?.id
   if (logId === undefined) {
     return yield* failure()
   }
   const detail = (yield* cloudflareGet(
     `${root}/${encodeURIComponent(logId)}`,
-    token,
+    options.token,
     DetailEnvelope
   )).result
   return {
@@ -119,12 +118,28 @@ const main = Effect.gen(function* () {
   }
 })
 
+const main = Effect.gen(function* () {
+  const environment = yield* Schema.decodeUnknownEffect(Environment)(process.env).pipe(
+    Effect.mapError(failure)
+  )
+  const result = yield* inspectAiGatewayLog({
+    accountId: environment.CF_ACCOUNT_ID,
+    gatewayId: environment.CF_AIG_GATEWAY_ID,
+    ...(environment.CF_AIG_LOG_ID === undefined ? {} : { logId: environment.CF_AIG_LOG_ID }),
+    token: Redacted.make(environment.CLOUDFLARE_API_TOKEN)
+  })
+  yield* Console.log(JSON.stringify(result))
+})
+
 if (import.meta.main) {
-  Effect.runPromise(main).then(
-    (result) => console.log(JSON.stringify(result)),
-    () => {
-      console.error("AI Gateway log inspection failed")
-      process.exitCode = 1
-    }
+  BunRuntime.runMain(
+    main.pipe(
+      Effect.catch(() =>
+        Console.error("AI Gateway log inspection failed").pipe(
+          Effect.andThen(Effect.fail(failure()))
+        )
+      ),
+      Effect.provide(BunHttpClient.layer)
+    )
   )
 }

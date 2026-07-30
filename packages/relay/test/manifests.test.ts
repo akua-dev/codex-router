@@ -83,7 +83,7 @@ describe("relay Kubernetes deployment", () => {
         { name: "PORT", value: "8788" }
       ],
       image:
-        "ghcr.io/akua-dev/codex-router-relay@sha256:8989bcc03834752ce1b0fe67faefe15bca767760939ad0bea93cd2ff0d83ed30",
+        "ghcr.io/akua-dev/codex-router-relay@sha256:83d6a388dc003cd50d3734be96bf79274f36fc061fff530c24431a2e66a0fd17",
       securityContext: {
         allowPrivilegeEscalation: false,
         capabilities: { drop: ["ALL"] },

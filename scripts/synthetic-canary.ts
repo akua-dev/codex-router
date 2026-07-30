@@ -1,4 +1,5 @@
-import { Effect, Redacted, Schema } from "effect"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
+import { Clock, Console, Effect, Redacted, Schema } from "effect"
 
 export const syntheticCanaryExpectedBytes = new TextEncoder().encode(
   'data: {"delta":"🌊"}\n\ndata: {"delta":"done"}\n\ndata: [DONE]\n\n'
@@ -57,12 +58,15 @@ const equalBytes = (left: Uint8Array, right: Uint8Array): boolean => {
 export const runSyntheticCanary = Effect.fn("runSyntheticCanary")(function* (
   options: SyntheticCanaryOptions
 ) {
-  const clock = options.clock ?? performance.now.bind(performance)
+  const currentTimeMillis =
+    options.clock === undefined
+      ? Clock.currentTimeNanos.pipe(Effect.map((nanoseconds) => Number(nanoseconds) / 1_000_000))
+      : Effect.sync(options.clock)
   const target = yield* Effect.try({
     try: () => new URL("/admin/canary/sse", options.url),
     catch: failure
   })
-  const startedAt = clock()
+  const startedAt = yield* currentTimeMillis
   let requestCount = 0
   const response = yield* Effect.tryPromise({
     try: () => {
@@ -100,11 +104,11 @@ export const runSyntheticCanary = Effect.fn("runSyntheticCanary")(function* (
       break
     }
     if (next.value.byteLength > 0) {
-      firstByteAt ??= clock()
+      firstByteAt ??= yield* currentTimeMillis
       chunks.push(next.value)
     }
   }
-  const completedAt = clock()
+  const completedAt = yield* currentTimeMillis
   const actual = concatenate(chunks)
   if (
     firstByteAt === undefined ||
@@ -132,18 +136,21 @@ const main = Effect.gen(function* () {
   const environment = yield* Schema.decodeUnknownEffect(Environment)(process.env).pipe(
     Effect.mapError(failure)
   )
-  return yield* runSyntheticCanary({
+  const result = yield* runSyntheticCanary({
     adminToken: Redacted.make(environment.CODEX_ROUTER_ADMIN_TOKEN),
     url: environment.CODEX_ROUTER_URL
   })
+  yield* Console.log(JSON.stringify(result))
 })
 
 if (import.meta.main) {
-  Effect.runPromise(main).then(
-    (result) => console.log(JSON.stringify(result)),
-    () => {
-      console.error("Synthetic streaming canary failed")
-      process.exitCode = 1
-    }
+  BunRuntime.runMain(
+    main.pipe(
+      Effect.catch(() =>
+        Console.error("Synthetic streaming canary failed").pipe(
+          Effect.andThen(Effect.fail(failure()))
+        )
+      )
+    )
   )
 }

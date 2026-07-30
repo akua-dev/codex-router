@@ -153,11 +153,11 @@ one account: about 7.6 days
 two accounts: about 6.9 days
 ```
 
-Request volume fits the Free limits. CPU does not: the final post-deploy smoke averaged 12.688 ms
-over four successful Worker invocations, while the fuller real-canary window averaged 20.80 ms over
-nine and reached a 46.481 ms minute p99. The Free allowance is 10 ms/invocation. These mixed
-diagnostic windows are not throughput benchmarks, but they are enough to reject an unconditional
-Free-tier claim.
+Request volume fits the Free limits. CPU does not: the current Effect-platform release smoke
+averaged 27.142 ms over eight successful Worker invocations and reached a 39.389 ms minute p99. An
+earlier fuller real-canary window averaged 20.80 ms over nine and reached a 46.481 ms minute p99.
+The Free allowance is 10 ms/invocation. These mixed diagnostic windows are not throughput
+benchmarks, but they are enough to reject an unconditional Free-tier claim.
 
 See [operations](operations.md) and [canary evidence](canary.md).
 

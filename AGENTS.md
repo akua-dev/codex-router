@@ -308,10 +308,11 @@ At peak plus minute maintenance:
 - AI Gateway 100,000-log history lasts about 7.6 days with one enabled account or 6.9 days with two
   at the recent model average.
 
-The final post-deploy smoke recorded four successful Worker invocations with 50.752 ms aggregate CPU
-(12.688 ms average), and the fuller real-canary window recorded nine with 187.188 ms (20.80 ms
-average) and a 46.481 ms minute p99. Request counts fit Free; CPU does not justify a Free-tier
-guarantee. Prefer Workers Paid unless newer representative telemetry proves otherwise.
+The current Effect-platform release smoke recorded eight successful Worker invocations with 217.134
+ms aggregate CPU (27.142 ms average) and a 39.389 ms minute p99. The earlier fuller real-canary
+window recorded nine with 187.188 ms (20.80 ms average) and a 46.481 ms minute p99. Request counts
+fit Free; CPU does not justify a Free-tier guarantee. Prefer Workers Paid unless newer
+representative telemetry proves otherwise.
 
 ## AgentOS and Pi evidence
 
