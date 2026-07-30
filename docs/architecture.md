@@ -179,6 +179,11 @@ reservations, then opaque account ID.
 
 Anonymous traffic is balanced but never assigned using inferred identity.
 
+When no candidate is eligible, the portable core returns a typed `NoEligibleAccountsError` carrying
+the complete `CandidateExplanation` array produced during selection, including each opaque account
+ID and its rejection reason. AgentOS and other consumers should render those explanations rather
+than reimplementing eligibility policy.
+
 ## Generation-safe credential lifecycle
 
 Every subscription credential has a monotonically increasing router generation.
