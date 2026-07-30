@@ -1,11 +1,12 @@
 import {
-  AccountCredential,
   AccountDirectory,
   AuthenticationError,
   ClientAuthenticator,
   CredentialUnavailableError,
   GatewayTelemetry,
+  SubscriptionCredential,
   UpstreamTransport,
+  configuredSubscriptionRouterLayer,
   type RouterFetch
 } from "@akua-dev/codex-router-codex"
 import { Candidate, UsageSnapshot, UsageWindow, type AccountId } from "@akua-dev/codex-router-core"
@@ -19,7 +20,9 @@ import { type CloudflareWorkerApplication, makeWorkerFetch } from "./worker.ts"
 
 const CredentialBundle = Schema.Struct({
   accessToken: Schema.String,
-  providerAccountId: Schema.optionalKey(Schema.String)
+  expiresAt: Schema.Number,
+  providerAccountId: Schema.String,
+  refreshToken: Schema.String
 })
 
 const decodeCredentialBundle = Schema.decodeUnknownEffect(Schema.fromJsonString(CredentialBundle))
@@ -79,9 +82,9 @@ const encodedCredential = (account: WorkerConfiguredAccount): Redacted.Redacted<
   Redacted.make(
     JSON.stringify({
       accessToken: Redacted.value(account.accessToken),
-      ...(account.providerAccountId === undefined
-        ? {}
-        : { providerAccountId: account.providerAccountId })
+      expiresAt: account.expiresAt,
+      providerAccountId: Redacted.value(account.providerAccountId),
+      refreshToken: Redacted.value(account.refreshToken)
     })
   )
 
@@ -116,12 +119,13 @@ const credentialFromVault = Effect.fn("credentialFromVault")(function* (
         })
     )
   )
-  return AccountCredential.make({
+  return SubscriptionCredential.make({
     accessToken: Redacted.make(bundle.accessToken),
     accountId,
-    ...(bundle.providerAccountId === undefined
-      ? {}
-      : { providerAccountId: bundle.providerAccountId })
+    expiresAt: bundle.expiresAt,
+    generation: 1,
+    providerAccountId: Redacted.make(bundle.providerAccountId),
+    refreshToken: Redacted.make(bundle.refreshToken)
   })
 })
 
@@ -190,7 +194,7 @@ export const makeCloudflareWorkerApplication = async (
   const vault = makeDurableCredentialVault(stub, cipher)
   await Effect.runPromise(bootstrapVault(config.accounts, vault))
 
-  const layer = Layer.mergeAll(
+  const dependencies = Layer.mergeAll(
     durableObjectRoutingStateLayer(stub),
     workerAuthenticatorLayer(config),
     workerAccountDirectoryLayer(config, vault),
@@ -209,6 +213,10 @@ export const makeCloudflareWorkerApplication = async (
       })
     ),
     workerTelemetryLayer
+  )
+  const layer = Layer.merge(
+    dependencies,
+    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
   const runtime = ManagedRuntime.make(layer)
   try {

@@ -10,8 +10,10 @@ describe("decodeBunConfig", () => {
           {
             accessToken: "upstream-secret",
             accountId: "account-a",
+            expiresAt: 1_800_003_600_000,
             observedAt: 1_800_000_000_000,
             providerAccountId: "provider-a",
+            refreshToken: "refresh-secret",
             shortResetAt: 1_800_018_000_000,
             shortUsedPercent: 10,
             weeklyResetAt: 1_800_604_800_000,
@@ -34,6 +36,7 @@ describe("decodeBunConfig", () => {
         return
       }
       expect(Redacted.value(firstAccount.accessToken)).toBe("upstream-secret")
+      expect(Redacted.value(firstAccount.refreshToken)).toBe("refresh-secret")
       expect(JSON.stringify(config)).not.toContain("client-secret")
       expect(JSON.stringify(config)).not.toContain("upstream-secret")
     })

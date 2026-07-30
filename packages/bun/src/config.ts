@@ -4,7 +4,9 @@ import { Effect, Redacted, Schema } from "effect"
 export class ConfiguredAccount extends Schema.Class<ConfiguredAccount>("ConfiguredAccount")({
   accountId: AccountId,
   accessToken: Schema.RedactedFromValue(Schema.String),
-  providerAccountId: Schema.optionalKey(Schema.String),
+  expiresAt: Schema.Number,
+  providerAccountId: Schema.RedactedFromValue(Schema.String),
+  refreshToken: Schema.RedactedFromValue(Schema.String),
   observedAt: Schema.Number,
   shortUsedPercent: Schema.Number,
   shortResetAt: Schema.Number,

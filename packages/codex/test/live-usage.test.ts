@@ -21,10 +21,7 @@ const credential = SubscriptionCredential.make({
   refreshToken: Redacted.make("refresh-a")
 })
 
-const transport = (
-  response: Response,
-  requests: Array<Request>
-): CodexControlTransportShape => ({
+const transport = (response: Response, requests: Array<Request>): CodexControlTransportShape => ({
   execute: (request) =>
     Effect.sync(() => {
       requests.push(request)

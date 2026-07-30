@@ -4,15 +4,14 @@
 > smallest coherent behavior, rerun it in green, and commit the increment. Do not weaken an
 > assertion to make an implementation pass.
 
-**Goal:** Ship `codex-router` as a ChatGPT/Codex subscription-only load balancer with portable Effect
-OAuth/quota orchestration, generation-safe persistence, Cloudflare cron and Bun schedules, secure
-administration, key rotation, and verified Cloudflare AI Gateway streaming.
+**Goal:** Ship `codex-router` as a ChatGPT/Codex subscription-only load balancer with portable
+Effect OAuth/quota orchestration, generation-safe persistence, Cloudflare cron and Bun schedules,
+secure administration, key rotation, and verified Cloudflare AI Gateway streaming.
 
 **Architecture:** `packages/core` owns generic quota/routing models. `packages/codex` owns
-subscription credential, OAuth, usage, and router ports plus the transparent handler.
-`packages/bun` and `packages/cloudflare` implement those ports with runtime storage and transport.
-The Worker performs exactly three normal Durable Object calls and never sends model bodies through
-the object.
+subscription credential, OAuth, usage, and router ports plus the transparent handler. `packages/bun`
+and `packages/cloudflare` implement those ports with runtime storage and transport. The Worker
+performs exactly three normal Durable Object calls and never sends model bodies through the object.
 
 **Stack:** Bun, TypeScript, Effect 4.0 beta, `@effect/vitest`, Effect Schema, Effect SQL SQLite Bun,
 Cloudflare Workers, SQLite Durable Objects, Web Crypto AES-GCM, Wrangler, Cloudflare AI Gateway.
@@ -69,8 +68,7 @@ Run:
 bun test packages/codex/test/handler.test.ts packages/bun/test/config.test.ts packages/cloudflare/test/worker.test.ts
 ```
 
-Expected: failure because the current schema and target resolver still support
-`openai_api_key`.
+Expected: failure because the current schema and target resolver still support `openai_api_key`.
 
 ### Step 2: Remove the mode branches
 
@@ -139,15 +137,15 @@ Create schema-backed models:
 ```ts
 class CredentialGeneration extends Schema.Int.pipe(Schema.positive()) {}
 
-class SubscriptionCredential extends Schema.Class<SubscriptionCredential>(
-  "SubscriptionCredential"
-)({
-  accessToken: RedactedSchema,
-  refreshToken: RedactedSchema,
-  expiresAt: Schema.Number,
-  providerAccountId: RedactedSchema,
-  generation: CredentialGeneration
-}) {}
+class SubscriptionCredential extends Schema.Class<SubscriptionCredential>("SubscriptionCredential")(
+  {
+    accessToken: RedactedSchema,
+    refreshToken: RedactedSchema,
+    expiresAt: Schema.Number,
+    providerAccountId: RedactedSchema,
+    generation: CredentialGeneration
+  }
+) {}
 ```
 
 Define:
@@ -230,9 +228,9 @@ readonly acquire: (
 ) => Effect.Effect<RouteGrant, NoEligibleAccount | AccountStoreError>
 ```
 
-Use `Deferred` or `FiberMap` for runtime-local single flight and persistent claims for
-cross-runtime exclusion. Waiters use a bounded Effect schedule to re-read state. Every public
-operation is a named `Effect.fn`.
+Use `Deferred` or `FiberMap` for runtime-local single flight and persistent claims for cross-runtime
+exclusion. Waiters use a bounded Effect schedule to re-read state. Every public operation is a named
+`Effect.fn`.
 
 ### Step 3: Refactor the handler
 
@@ -311,8 +309,8 @@ Expected: module-not-found failure.
 ### Step 4: Write and implement schedule test
 
 With `TestClock`, prove a scoped maintenance fiber runs once per minute and stops on scope close.
-Implement it with `Schedule.spaced("1 minute")` or `Schedule.fixed("1 minute")`, not a manual
-sleep loop.
+Implement it with `Schedule.spaced("1 minute")` or `Schedule.fixed("1 minute")`, not a manual sleep
+loop.
 
 ### Step 5: Verify and commit
 
@@ -588,8 +586,8 @@ Document verified behavior only:
 - AI Gateway logging retention/privacy
 - deployment, rollback, and incident response
 
-Remove stale instructions for bootstrap access tokens, manual usage snapshots, API-key mode, and
-the separate credential-get RPC.
+Remove stale instructions for bootstrap access tokens, manual usage snapshots, API-key mode, and the
+separate credential-get RPC.
 
 ### Step 2: Add executable canary instructions
 
@@ -617,8 +615,8 @@ git add README.md AGENTS.md docs
 git commit -m "docs: operate the subscription router"
 ```
 
-The first search may contain only historical evidence explicitly labeled as removed. The second
-must return no placeholders.
+The first search may contain only historical evidence explicitly labeled as removed. The second must
+return no placeholders.
 
 ## Task 10: Local release verification
 
@@ -758,8 +756,8 @@ Verify:
 ### Step 3: Exercise generation safety
 
 Reauthenticate the same opaque account and verify its generation increments. Confirm a simulated
-late 401 for the old generation cannot mark the new generation as requiring reauthentication.
-Do not force-expire or revoke a healthy production credential merely to test refresh.
+late 401 for the old generation cannot mark the new generation as requiring reauthentication. Do not
+force-expire or revoke a healthy production credential merely to test refresh.
 
 ### Step 4: Record measured results and commit
 

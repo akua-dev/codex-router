@@ -8,9 +8,7 @@ export class CodexControlTransportError extends Schema.TaggedErrorClass<CodexCon
 ) {}
 
 export interface CodexControlTransportShape {
-  readonly execute: (
-    request: Request
-  ) => Effect.Effect<Response, CodexControlTransportError>
+  readonly execute: (request: Request) => Effect.Effect<Response, CodexControlTransportError>
 }
 
 export class CodexControlTransport extends Context.Service<

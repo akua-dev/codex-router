@@ -7,10 +7,11 @@ import {
   UsageWindow
 } from "@akua-dev/codex-router-core"
 import {
-  AccountCredential,
   AccountDirectory,
   ClientAuthenticator,
   GatewayTelemetry,
+  SubscriptionCredential,
+  configuredSubscriptionRouterLayer,
   UpstreamTransport
 } from "@akua-dev/codex-router-codex"
 import { Effect, Layer, Redacted } from "effect"
@@ -67,8 +68,10 @@ describe("worker bindings", () => {
           {
             accessToken: "provider-secret-value",
             accountId: "account-a",
+            expiresAt: now + 3_600_000,
             observedAt: now,
             providerAccountId: "provider-a",
+            refreshToken: "refresh-secret-value",
             shortResetAt: now + 60 * 60 * 1_000,
             shortUsedPercent: 10,
             weeklyResetAt: now + 7 * 24 * 60 * 60 * 1_000,
@@ -135,7 +138,7 @@ describe("worker bindings", () => {
     }
   }
   let aiGatewayRequest: Request | undefined
-  const testLayer = Layer.mergeAll(
+  const dependencies = Layer.mergeAll(
     durableObjectRoutingStateLayer(stub),
     Layer.succeed(
       ClientAuthenticator,
@@ -150,10 +153,13 @@ describe("worker bindings", () => {
         candidates: Effect.succeed([candidate]),
         credential: () =>
           Effect.succeed(
-            AccountCredential.make({
+            SubscriptionCredential.make({
               accessToken: Redacted.make("provider-secret"),
               accountId,
-              providerAccountId: "provider-a"
+              expiresAt: Number.MAX_SAFE_INTEGER,
+              generation: 1,
+              providerAccountId: Redacted.make("provider-a"),
+              refreshToken: Redacted.make("refresh-secret")
             })
           )
       })
@@ -190,6 +196,10 @@ describe("worker bindings", () => {
         decision: () => Effect.void
       })
     )
+  )
+  const testLayer = Layer.merge(
+    dependencies,
+    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
 
   layer(testLayer)("Worker request path", (it) => {

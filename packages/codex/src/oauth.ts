@@ -66,10 +66,7 @@ export class ProviderIdentityChangedError extends Schema.TaggedErrorClass<Provid
 ) {}
 
 export type OAuthClientError =
-  | OAuthTransportError
-  | OAuthPayloadError
-  | OAuthInvalidGrantError
-  | ProviderIdentityChangedError
+  OAuthTransportError | OAuthPayloadError | OAuthInvalidGrantError | ProviderIdentityChangedError
 
 export interface OAuthClientShape {
   readonly startDeviceAuthorization: () => Effect.Effect<
@@ -197,10 +194,7 @@ const requestToken = Effect.fn("OAuthClient.requestToken")(function* (
   if (!response.ok) {
     if (response.status === 400) {
       const decoded = yield* Effect.option(
-        readJson(response).pipe(
-          Effect.flatMap(decodeOAuthError),
-          Effect.mapError(payloadFailure)
-        )
+        readJson(response).pipe(Effect.flatMap(decodeOAuthError), Effect.mapError(payloadFailure))
       )
       if (decoded._tag === "Some" && decoded.value.error === "invalid_grant") {
         return yield* new OAuthInvalidGrantError({
@@ -275,80 +269,79 @@ export const makeOpenAiOAuthClient = (options: {
       })
     }),
 
-    pollDeviceAuthorization: Effect.fn("OAuthClient.pollDeviceAuthorization")(function* (
-      device,
-      accountId
-    ) {
-      if (clock() >= device.expiresAt) {
-        return yield* new OAuthPayloadError({
-          message: "The OpenAI device authorization expired"
-        })
-      }
-      const response = yield* execute(
-        options.transport,
-        new Request(`${authBaseUrl}/api/accounts/deviceauth/token`, {
-          body: JSON.stringify({
-            device_auth_id: Redacted.value(device.deviceAuthId),
-            user_code: device.userCode
-          }),
-          headers: { "content-type": "application/json" },
-          method: "POST"
-        })
-      )
-      if (response.status === 403 || response.status === 404) {
-        return DeviceAuthorizationPending.make({
-          retryAfterSeconds: device.intervalSeconds
-        })
-      }
-      if (!response.ok) {
-        const decoded = yield* Effect.option(
-          readJson(response).pipe(
-            Effect.flatMap(decodeDevicePollError),
-            Effect.mapError(payloadFailure)
-          )
-        )
-        if (decoded._tag === "Some") {
-          const code = deviceErrorCode(decoded.value.error)
-          if (code === "deviceauth_authorization_pending") {
-            return DeviceAuthorizationPending.make({
-              retryAfterSeconds: device.intervalSeconds
-            })
-          }
-          if (code === "slow_down") {
-            return DeviceAuthorizationPending.make({
-              retryAfterSeconds: device.intervalSeconds + 5
-            })
-          }
+    pollDeviceAuthorization: Effect.fn("OAuthClient.pollDeviceAuthorization")(
+      function* (device, accountId) {
+        if (clock() >= device.expiresAt) {
+          return yield* new OAuthPayloadError({
+            message: "The OpenAI device authorization expired"
+          })
         }
-        return yield* transportFailure()
-      }
-      if (accountId === undefined) {
-        return yield* payloadFailure()
-      }
-      const body = yield* readJson(response)
-      const code = yield* decodeDevicePoll(body).pipe(Effect.mapError(payloadFailure))
-      const token = yield* requestToken(
-        options.transport,
-        new URLSearchParams({
-          client_id: clientId,
-          code: code.authorization_code,
-          code_verifier: code.code_verifier,
-          grant_type: "authorization_code",
-          redirect_uri: deviceRedirectUri
+        const response = yield* execute(
+          options.transport,
+          new Request(`${authBaseUrl}/api/accounts/deviceauth/token`, {
+            body: JSON.stringify({
+              device_auth_id: Redacted.value(device.deviceAuthId),
+              user_code: device.userCode
+            }),
+            headers: { "content-type": "application/json" },
+            method: "POST"
+          })
+        )
+        if (response.status === 403 || response.status === 404) {
+          return DeviceAuthorizationPending.make({
+            retryAfterSeconds: device.intervalSeconds
+          })
+        }
+        if (!response.ok) {
+          const decoded = yield* Effect.option(
+            readJson(response).pipe(
+              Effect.flatMap(decodeDevicePollError),
+              Effect.mapError(payloadFailure)
+            )
+          )
+          if (decoded._tag === "Some") {
+            const code = deviceErrorCode(decoded.value.error)
+            if (code === "deviceauth_authorization_pending") {
+              return DeviceAuthorizationPending.make({
+                retryAfterSeconds: device.intervalSeconds
+              })
+            }
+            if (code === "slow_down") {
+              return DeviceAuthorizationPending.make({
+                retryAfterSeconds: device.intervalSeconds + 5
+              })
+            }
+          }
+          return yield* transportFailure()
+        }
+        if (accountId === undefined) {
+          return yield* payloadFailure()
+        }
+        const body = yield* readJson(response)
+        const code = yield* decodeDevicePoll(body).pipe(Effect.mapError(payloadFailure))
+        const token = yield* requestToken(
+          options.transport,
+          new URLSearchParams({
+            client_id: clientId,
+            code: code.authorization_code,
+            code_verifier: code.code_verifier,
+            grant_type: "authorization_code",
+            redirect_uri: deviceRedirectUri
+          })
+        )
+        if (token.refresh_token === undefined) {
+          return yield* payloadFailure()
+        }
+        const credential = yield* makeCredential({
+          accessToken: token.access_token,
+          accountId,
+          expiresAt: clock() + token.expires_in * 1_000,
+          generation: 1,
+          refreshToken: token.refresh_token
         })
-      )
-      if (token.refresh_token === undefined) {
-        return yield* payloadFailure()
+        return DeviceAuthorizationReady.make({ credential })
       }
-      const credential = yield* makeCredential({
-        accessToken: token.access_token,
-        accountId,
-        expiresAt: clock() + token.expires_in * 1_000,
-        generation: 1,
-        refreshToken: token.refresh_token
-      })
-      return DeviceAuthorizationReady.make({ credential })
-    }),
+    ),
 
     refresh: Effect.fn("OAuthClient.refresh")(function* (credential) {
       const token = yield* requestToken(

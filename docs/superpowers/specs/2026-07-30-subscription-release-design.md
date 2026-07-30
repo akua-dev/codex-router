@@ -100,8 +100,8 @@ The model request and response bodies never enter the Durable Object. The Worker
 selected envelope in memory, injects it into the upstream request, and streams through Cloudflare AI
 Gateway.
 
-Fusing route acquisition with credential delivery removes the current fourth Durable Object call
-to `credential/get`. At the observed peak of 24,657 requests/day, the normal path is 73,971 Durable
+Fusing route acquisition with credential delivery removes the current fourth Durable Object call to
+`credential/get`. At the observed peak of 24,657 requests/day, the normal path is 73,971 Durable
 Object requests/day before stream renewals.
 
 ## Domain Model
@@ -125,8 +125,8 @@ Access and refresh tokens use Effect `Redacted`. Provider identity is encrypted 
 tokens. The generation is safe to expose internally and is used for compare-and-set behavior.
 
 An access token is due for proactive refresh five minutes before expiry. Refresh responses must
-decode through Effect Schema and must resolve to the same provider identity as the stored bundle.
-An identity change fails closed and marks the account as requiring reauthentication.
+decode through Effect Schema and must resolve to the same provider identity as the stored bundle. An
+identity change fails closed and marks the account as requiring reauthentication.
 
 ### Usage snapshot
 
@@ -483,8 +483,8 @@ bundle size.
 
 ### Minimal real subscription canary
 
-After one account completes device authorization, send one minimal Codex Responses streaming
-request through the deployed Worker and AI Gateway. Verify:
+After one account completes device authorization, send one minimal Codex Responses streaming request
+through the deployed Worker and AI Gateway. Verify:
 
 - live usage is obtained
 - the account is selected

@@ -100,10 +100,7 @@ describe("OpenAI Codex OAuth", () => {
         clock: () => now,
         transport: makeTransport(
           [
-            Response.json(
-              { error: { code: "deviceauth_authorization_pending" } },
-              { status: 400 }
-            ),
+            Response.json({ error: { code: "deviceauth_authorization_pending" } }, { status: 400 }),
             Response.json({ error: "slow_down" }, { status: 400 })
           ],
           []
@@ -183,40 +180,42 @@ describe("OpenAI Codex OAuth", () => {
     })
   )
 
-  it.effect("refreshes early credentials, preserves an omitted refresh token, and increments generation", () =>
-    Effect.gen(function* () {
-      const requests: Array<Request> = []
-      const client = makeOpenAiOAuthClient({
-        clock: () => now,
-        transport: makeTransport(
-          [
-            Response.json({
-              access_token: accessToken("provider-a"),
-              expires_in: 7_200
-            })
-          ],
-          requests
-        )
-      })
-      const source = SubscriptionCredential.make({
-        accessToken: Redacted.make(accessToken("provider-a")),
-        accountId,
-        expiresAt: now + 60_000,
-        generation: 7,
-        providerAccountId: Redacted.make("provider-a"),
-        refreshToken: Redacted.make("refresh-a")
-      })
+  it.effect(
+    "refreshes early credentials, preserves an omitted refresh token, and increments generation",
+    () =>
+      Effect.gen(function* () {
+        const requests: Array<Request> = []
+        const client = makeOpenAiOAuthClient({
+          clock: () => now,
+          transport: makeTransport(
+            [
+              Response.json({
+                access_token: accessToken("provider-a"),
+                expires_in: 7_200
+              })
+            ],
+            requests
+          )
+        })
+        const source = SubscriptionCredential.make({
+          accessToken: Redacted.make(accessToken("provider-a")),
+          accountId,
+          expiresAt: now + 60_000,
+          generation: 7,
+          providerAccountId: Redacted.make("provider-a"),
+          refreshToken: Redacted.make("refresh-a")
+        })
 
-      const refreshed = yield* client.refresh(source)
-      expect(refreshed.generation).toBe(8)
-      expect(refreshed.expiresAt).toBe(now + 7_200_000)
-      expect(Redacted.value(refreshed.refreshToken)).toBe("refresh-a")
-      const body = requests[0]
-      expect(body).toBeDefined()
-      if (body !== undefined) {
-        expect(yield* Effect.promise(() => body.text())).toContain("grant_type=refresh_token")
-      }
-    })
+        const refreshed = yield* client.refresh(source)
+        expect(refreshed.generation).toBe(8)
+        expect(refreshed.expiresAt).toBe(now + 7_200_000)
+        expect(Redacted.value(refreshed.refreshToken)).toBe("refresh-a")
+        const body = requests[0]
+        expect(body).toBeDefined()
+        if (body !== undefined) {
+          expect(yield* Effect.promise(() => body.text())).toContain("grant_type=refresh_token")
+        }
+      })
   )
 
   it.effect("fails closed when refresh changes provider identity", () =>

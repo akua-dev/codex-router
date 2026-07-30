@@ -3,9 +3,10 @@ import {
   ClientAuthenticator,
   CredentialUnavailableError,
   GatewayTelemetry,
+  SubscriptionCredential,
   TransportError,
   UpstreamTransport,
-  AccountCredential
+  configuredSubscriptionRouterLayer
 } from "@akua-dev/codex-router-codex"
 import {
   Candidate,
@@ -70,13 +71,14 @@ const accountCandidate = (account: ConfiguredAccount): Candidate =>
     })
   })
 
-const accountCredential = (account: ConfiguredAccount): AccountCredential =>
-  AccountCredential.make({
+const accountCredential = (account: ConfiguredAccount): SubscriptionCredential =>
+  SubscriptionCredential.make({
     accessToken: account.accessToken,
     accountId: account.accountId,
-    ...(account.providerAccountId === undefined
-      ? {}
-      : { providerAccountId: account.providerAccountId })
+    expiresAt: account.expiresAt,
+    generation: 1,
+    providerAccountId: account.providerAccountId,
+    refreshToken: account.refreshToken
   })
 
 export const bunAccountDirectoryLayer = (config: BunRuntimeConfig) =>
@@ -132,11 +134,16 @@ export const bunGatewayTelemetryLayer = Layer.succeed(
   })
 )
 
-export const bunRuntimeLayer = (config: BunRuntimeConfig) =>
-  Layer.mergeAll(
+export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
+  const dependencies = Layer.mergeAll(
     sqliteRoutingStateLayer(config.databasePath, defaultRoutingConfig),
     bunClientAuthenticatorLayer(config),
     bunAccountDirectoryLayer(config),
     bunUpstreamTransportLayer,
     bunGatewayTelemetryLayer
   )
+  return Layer.merge(
+    dependencies,
+    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
+  )
+}

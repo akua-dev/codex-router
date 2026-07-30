@@ -1,10 +1,6 @@
-import type {
-  AccountId,
-  Candidate,
-  SelectionReason,
-  SessionKey
-} from "@akua-dev/codex-router-core"
-import { Context, Effect, Option, Redacted, Schema } from "effect"
+import type { AccountId, Candidate, SelectionReason, SessionKey } from "@akua-dev/codex-router-core"
+import { Context, Effect, Option, Schema } from "effect"
+import type { SubscriptionCredential } from "./credentials.ts"
 
 export class AuthenticationError extends Schema.TaggedErrorClass<AuthenticationError>()(
   "AuthenticationError",
@@ -31,16 +27,6 @@ export class TransportError extends Schema.TaggedErrorClass<TransportError>()("T
   message: Schema.String
 }) {}
 
-export class AccountCredential extends Schema.Class<AccountCredential>("AccountCredential")({
-  accountId: Schema.String.pipe(Schema.brand("AccountId")),
-  accessToken: Schema.Redacted(Schema.String),
-  providerAccountId: Schema.optionalKey(Schema.String)
-}) {
-  get authorization(): string {
-    return `Bearer ${Redacted.value(this.accessToken)}`
-  }
-}
-
 export class ClientAuthenticator extends Context.Service<
   ClientAuthenticator,
   {
@@ -54,7 +40,7 @@ export class AccountDirectory extends Context.Service<
     readonly candidates: Effect.Effect<ReadonlyArray<Candidate>, AccountDirectoryError>
     readonly credential: (
       accountId: AccountId
-    ) => Effect.Effect<AccountCredential, CredentialUnavailableError>
+    ) => Effect.Effect<SubscriptionCredential, CredentialUnavailableError>
   }
 >()("@akua-dev/codex-router/AccountDirectory") {}
 

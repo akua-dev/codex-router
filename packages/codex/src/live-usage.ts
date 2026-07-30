@@ -35,10 +35,7 @@ export class UsagePayloadError extends Schema.TaggedErrorClass<UsagePayloadError
 ) {}
 
 export type LiveUsageError =
-  | UsageAuthenticationError
-  | UsageThrottledError
-  | UsageTransportError
-  | UsagePayloadError
+  UsageAuthenticationError | UsageThrottledError | UsageTransportError | UsagePayloadError
 
 export interface UsageProbeShape {
   readonly getUsage: (

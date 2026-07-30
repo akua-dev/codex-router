@@ -11,12 +11,13 @@ import {
 } from "@akua-dev/codex-router-core"
 import { Effect, Layer, Redacted } from "effect"
 import {
-  AccountCredential,
   AccountDirectory,
   ClientAuthenticator,
   GatewayTelemetry,
+  SubscriptionCredential,
   TransportError,
   UpstreamTransport,
+  configuredSubscriptionRouterLayer,
   extractSessionKey,
   makeRouterFetch,
   resolveUpstreamTarget,
@@ -74,7 +75,7 @@ const makeTestLayer = (probe: Probe, options: TestLayerOptions = {}) => {
       ).pipe(Layer.provide(inMemoryRoutingStateLayer(defaultRoutingConfig)))
     : inMemoryRoutingStateLayer(defaultRoutingConfig)
 
-  return Layer.mergeAll(
+  const dependencies = Layer.mergeAll(
     routing,
     Layer.succeed(
       ClientAuthenticator,
@@ -88,10 +89,13 @@ const makeTestLayer = (probe: Probe, options: TestLayerOptions = {}) => {
         candidates: Effect.succeed([candidate]),
         credential: () =>
           Effect.succeed(
-            AccountCredential.make({
+            SubscriptionCredential.make({
               accessToken: Redacted.make("selected-secret"),
               accountId,
-              providerAccountId: "provider-account-a"
+              expiresAt: Number.MAX_SAFE_INTEGER,
+              generation: 1,
+              providerAccountId: Redacted.make("provider-account-a"),
+              refreshToken: Redacted.make("refresh-secret")
             })
           )
       })
@@ -123,6 +127,10 @@ const makeTestLayer = (probe: Probe, options: TestLayerOptions = {}) => {
         decision: () => Effect.void
       })
     )
+  )
+  return Layer.merge(
+    dependencies,
+    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
 }
 
