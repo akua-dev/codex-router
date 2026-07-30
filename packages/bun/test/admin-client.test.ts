@@ -8,6 +8,7 @@ import {
 } from "@akua-dev/codex-router-codex"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Redacted } from "effect"
+import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import {
   RemoteAdminConfigurationError,
   makeRemoteAccountAdminClient,
@@ -18,14 +19,15 @@ describe("remote account administration", () => {
   it.effect("rejects plaintext non-loopback administration before transport", () =>
     Effect.gen(function* () {
       let transported = false
+      const client = HttpClient.make((request) => {
+        transported = true
+        return Effect.succeed(HttpClientResponse.fromWeb(request, new Response()))
+      })
       const error = yield* Effect.flip(
         makeRemoteAccountAdminClient({
           adminToken: Redacted.make("admin-secret"),
           baseUrl: "http://router.example.com",
-          transport: () => {
-            transported = true
-            return Promise.resolve(new Response())
-          }
+          client
         })
       )
 
@@ -70,13 +72,12 @@ describe("remote account administration", () => {
           }
         }
         let instruction = ""
-        let request: Request | undefined
-        const admin = yield* makeRemoteAccountAdminClient({
-          adminToken: Redacted.make("admin-secret"),
-          baseUrl: "https://router.example.com",
-          transport: (input) => {
-            request = input
-            return Promise.resolve(
+        let request: HttpClientRequest.HttpClientRequest | undefined
+        const client = HttpClient.make((input) => {
+          request = input
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              input,
               Response.json({
                 accountId: "account-a",
                 enabled: true,
@@ -85,7 +86,12 @@ describe("remote account administration", () => {
                 requiresReauthentication: false
               })
             )
-          }
+          )
+        })
+        const admin = yield* makeRemoteAccountAdminClient({
+          adminToken: Redacted.make("admin-secret"),
+          baseUrl: "https://router.example.com",
+          client
         })
 
         const result = yield* runRemoteDeviceLogin({
@@ -101,11 +107,19 @@ describe("remote account administration", () => {
         expect(result.accountId).toBe(accountId)
         expect(polls).toBe(2)
         expect(instruction).toContain("ABCD-EFGH")
-        expect(request?.headers.get("x-ai-router-admin-token")).toBe("admin-secret")
-        expect(request?.headers.get("x-ai-router-token")).toBeNull()
-        expect(yield* Effect.promise(() => request?.text() ?? Promise.resolve(""))).not.toContain(
-          "provider-a"
-        )
+        expect(request?.headers["x-ai-router-admin-token"]).toBe("admin-secret")
+        expect(request?.headers["x-ai-router-token"]).toBeUndefined()
+        expect(request?.body._tag).toBe("Raw")
+        const capturedRequest = request
+        if (
+          capturedRequest !== undefined &&
+          capturedRequest.body._tag === "Raw" &&
+          capturedRequest.body.body instanceof ReadableStream
+        ) {
+          const stream = capturedRequest.body.body
+          const body = yield* Effect.promise(() => new Response(stream).text())
+          expect(body).not.toContain("provider-a")
+        }
       })
   )
 })

@@ -1,5 +1,6 @@
 import { AccountId, type AccountId as AccountIdType } from "@akua-dev/codex-router-core"
 import { Context, Effect, Redacted, Schema } from "effect"
+import type { HttpClientResponse } from "effect/unstable/http"
 import {
   SubscriptionCredential,
   extractProviderAccountId,
@@ -135,12 +136,10 @@ const transportFailure = () =>
     message: "The OpenAI OAuth request did not complete"
   })
 
-const readJson = Effect.fn("OAuthClient.readJson")(function* (response: Response) {
-  return yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: payloadFailure
-  })
-})
+const readJson = Effect.fn("OAuthClient.readJson")(
+  (response: HttpClientResponse.HttpClientResponse) =>
+    response.json.pipe(Effect.mapError(payloadFailure))
+)
 
 const execute = Effect.fn("OAuthClient.execute")(function* (
   transport: CodexControlTransportShape,
@@ -169,7 +168,7 @@ const deviceErrorCode = (value: DevicePollErrorResponse["error"]): string | unde
 }
 
 const decodeTokenResponse = Effect.fn("OAuthClient.decodeTokenResponse")(function* (
-  response: Response
+  response: HttpClientResponse.HttpClientResponse
 ) {
   const body = yield* readJson(response)
   const token = yield* decodeToken(body).pipe(Effect.mapError(payloadFailure))
@@ -191,7 +190,7 @@ const requestToken = Effect.fn("OAuthClient.requestToken")(function* (
       method: "POST"
     })
   )
-  if (!response.ok) {
+  if (response.status < 200 || response.status >= 300) {
     if (response.status === 400) {
       const decoded = yield* Effect.option(
         readJson(response).pipe(Effect.flatMap(decodeOAuthError), Effect.mapError(payloadFailure))
@@ -254,7 +253,7 @@ export const makeOpenAiOAuthClient = (options: {
           method: "POST"
         })
       )
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         return yield* transportFailure()
       }
       const body = yield* readJson(response)
@@ -292,7 +291,7 @@ export const makeOpenAiOAuthClient = (options: {
             retryAfterSeconds: device.intervalSeconds
           })
         }
-        if (!response.ok) {
+        if (response.status < 200 || response.status >= 300) {
           const decoded = yield* Effect.option(
             readJson(response).pipe(
               Effect.flatMap(decodeDevicePollError),

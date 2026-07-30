@@ -4,6 +4,7 @@ import {
   type CodexControlTransportShape
 } from "@akua-dev/codex-router-codex"
 import { Effect, Redacted } from "effect"
+import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import type { WorkerRuntimeConfig } from "./config.ts"
 
 const failure = () =>
@@ -29,10 +30,11 @@ export const makeCloudflareCodexControlTransport = (
     execute: Effect.fn("CloudflareCodexControlTransport.execute")(function* (request) {
       const source = new URL(request.url)
       if (source.hostname === "auth.openai.com") {
-        return yield* Effect.tryPromise({
+        const response = yield* Effect.tryPromise({
           try: () => fetchImplementation(request),
           catch: failure
         })
+        return HttpClientResponse.fromWeb(HttpClientRequest.fromWeb(request), response)
       }
       if (source.hostname !== "chatgpt.com") {
         return yield* failure()
@@ -52,9 +54,10 @@ export const makeCloudflareCodexControlTransport = (
         method: request.method,
         signal: request.signal
       })
-      return yield* Effect.tryPromise({
+      const response = yield* Effect.tryPromise({
         try: () => fetchImplementation(forwarded),
         catch: failure
       })
+      return HttpClientResponse.fromWeb(HttpClientRequest.fromWeb(forwarded), response)
     })
   })

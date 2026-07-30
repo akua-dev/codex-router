@@ -101,16 +101,13 @@ export const makeCodexUsageProbe = (options: {
       if (response.status === 429) {
         return yield* new UsageThrottledError({
           message: "The Codex usage endpoint throttled the selected account",
-          retryAt: parseRetryAt(response.headers.get("retry-after"), observedAt)
+          retryAt: parseRetryAt(response.headers["retry-after"] ?? null, observedAt)
         })
       }
-      if (!response.ok) {
+      if (response.status < 200 || response.status >= 300) {
         return yield* transportFailure()
       }
-      const body = yield* Effect.tryPromise({
-        try: () => response.json(),
-        catch: payloadFailure
-      })
+      const body = yield* response.json.pipe(Effect.mapError(payloadFailure))
       return yield* decodeCodexUsage(body, observedAt, credential.accountId).pipe(
         Effect.mapError(payloadFailure)
       )

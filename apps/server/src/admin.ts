@@ -1,7 +1,13 @@
 import { makeRemoteAccountAdminClient, runRemoteDeviceLogin } from "@akua-dev/codex-router-bun"
-import { makeFetchCodexControlTransport, makeOpenAiOAuthClient } from "@akua-dev/codex-router-codex"
+import {
+  makeHttpClientCodexControlTransport,
+  makeOpenAiOAuthClient
+} from "@akua-dev/codex-router-codex"
 import { AccountId } from "@akua-dev/codex-router-core"
+import * as BunHttpClient from "@effect/platform-bun/BunHttpClient"
+import * as BunRuntime from "@effect/platform-bun/BunRuntime"
 import { Console, Effect, Redacted, Schema } from "effect"
+import { HttpClient } from "effect/unstable/http"
 
 class AdminCliError extends Schema.TaggedErrorClass<AdminCliError>()("AdminCliError", {
   message: Schema.String
@@ -31,9 +37,11 @@ const program = Effect.fn("CodexRouterAdminCli.program")(function* (
     )
   }
 
+  const httpClient = yield* HttpClient.HttpClient
   const admin = yield* makeRemoteAccountAdminClient({
     adminToken: Redacted.make(adminToken),
-    baseUrl
+    baseUrl,
+    client: httpClient
   })
 
   if (command === "list") {
@@ -51,7 +59,7 @@ const program = Effect.fn("CodexRouterAdminCli.program")(function* (
 
   if (command === "login") {
     const oauth = makeOpenAiOAuthClient({
-      transport: makeFetchCodexControlTransport()
+      transport: makeHttpClientCodexControlTransport(httpClient)
     })
     const summary = yield* runRemoteDeviceLogin({
       accountId,
@@ -82,8 +90,9 @@ const program = Effect.fn("CodexRouterAdminCli.program")(function* (
   return yield* fail("The administration command is not supported")
 })
 
-await Effect.runPromise(
+BunRuntime.runMain(
   program(process.argv.slice(2), process.env).pipe(
-    Effect.catch((error) => Console.error(error.message).pipe(Effect.andThen(Effect.fail(error))))
+    Effect.catch((error) => Console.error(error.message).pipe(Effect.andThen(Effect.fail(error)))),
+    Effect.provide(BunHttpClient.layer)
   )
 )

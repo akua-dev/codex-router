@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { AccountId } from "@akua-dev/codex-router-core"
 import { Effect, Redacted } from "effect"
+import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import {
   SubscriptionCredential,
   UsageAuthenticationError,
@@ -25,7 +26,7 @@ const transport = (response: Response, requests: Array<Request>): CodexControlTr
   execute: (request) =>
     Effect.sync(() => {
       requests.push(request)
-      return response
+      return HttpClientResponse.fromWeb(HttpClientRequest.fromWeb(request), response)
     })
 })
 

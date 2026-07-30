@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@effect/vitest"
 import { AccountId } from "@akua-dev/codex-router-core"
 import { Effect, Redacted, Result } from "effect"
+import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import {
   DeviceAuthorization,
   DeviceAuthorizationPending,
@@ -40,7 +41,10 @@ const makeTransport = (
         requests.push(request)
         const response = responses[index]
         index += 1
-        return response ?? new Response(null, { status: 500 })
+        return HttpClientResponse.fromWeb(
+          HttpClientRequest.fromWeb(request),
+          response ?? new Response(null, { status: 500 })
+        )
       })
   }
 }

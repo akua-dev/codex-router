@@ -7,6 +7,7 @@ import {
 } from "@akua-dev/codex-router-codex"
 import type { AccountId } from "@akua-dev/codex-router-core"
 import { Duration, Effect, Redacted, Schedule, Schema } from "effect"
+import { HttpClient, HttpClientRequest, type HttpClientResponse } from "effect/unstable/http"
 
 export class RemoteAdminConfigurationError extends Schema.TaggedErrorClass<RemoteAdminConfigurationError>()(
   "RemoteAdminConfigurationError",
@@ -69,24 +70,23 @@ const parseRemoteUrl = (value: string) =>
     }, configurationFailure)
   )
 
-const responseJson = Effect.fn("RemoteAccountAdmin.responseJson")(function* (response: Response) {
-  if (!response.ok) {
+const responseJson = Effect.fn("RemoteAccountAdmin.responseJson")(function* (
+  response: HttpClientResponse.HttpClientResponse
+) {
+  if (response.status < 200 || response.status >= 300) {
     return yield* transportFailure()
   }
-  return yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: transportFailure
-  })
+  return yield* response.json.pipe(Effect.mapError(transportFailure))
 })
 
 export const makeRemoteAccountAdminClient = Effect.fn("makeRemoteAccountAdminClient")(
   function* (options: {
     readonly adminToken: Redacted.Redacted<string>
     readonly baseUrl: string
-    readonly transport?: (request: Request) => Promise<Response>
+    readonly client: HttpClient.HttpClient
   }) {
     const baseUrl = yield* parseRemoteUrl(options.baseUrl)
-    const transport = options.transport ?? fetch
+    const client = options.client
 
     const execute = Effect.fn("RemoteAccountAdmin.execute")(function* (
       path: string,
@@ -99,10 +99,9 @@ export const makeRemoteAccountAdminClient = Effect.fn("makeRemoteAccountAdminCli
           "x-ai-router-admin-token": Redacted.value(options.adminToken)
         }
       })
-      return yield* Effect.tryPromise({
-        try: () => transport(request),
-        catch: transportFailure
-      })
+      return yield* client
+        .execute(HttpClientRequest.fromWeb(request))
+        .pipe(Effect.mapError(transportFailure))
     })
 
     return {

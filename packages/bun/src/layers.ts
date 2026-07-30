@@ -14,7 +14,7 @@ import {
   UsageProbe,
   accountAdminLayer,
   makeCodexUsageProbe,
-  makeFetchCodexControlTransport,
+  makeHttpClientCodexControlTransport,
   makeOpenAiOAuthClient,
   secureCompare,
   subscriptionRouterLayer
@@ -27,7 +27,9 @@ import {
   type AccountId
 } from "@akua-dev/codex-router-core"
 import * as BunCrypto from "@effect/platform-bun/BunCrypto"
+import * as BunHttpClient from "@effect/platform-bun/BunHttpClient"
 import { Crypto, Effect, Layer, Redacted } from "effect"
+import { HttpClient } from "effect/unstable/http"
 import type { BunRuntimeConfig, ConfiguredAccount } from "./config.ts"
 import { bunMaintenanceLayer } from "./maintenance.ts"
 import { sqliteSubscriptionAccountStoreLayer } from "./sqlite-account-store.ts"
@@ -196,7 +198,24 @@ export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
     })
   ).pipe(Layer.provide(storage))
   const initializedStorage = Layer.merge(storage, seed)
-  const controlTransport = makeFetchCodexControlTransport()
+  const controlServices = Layer.merge(
+    Layer.effect(
+      OAuthClient,
+      Effect.map(HttpClient.HttpClient, (client) =>
+        makeOpenAiOAuthClient({
+          transport: makeHttpClientCodexControlTransport(client)
+        })
+      )
+    ),
+    Layer.effect(
+      UsageProbe,
+      Effect.map(HttpClient.HttpClient, (client) =>
+        makeCodexUsageProbe({
+          transport: makeHttpClientCodexControlTransport(client)
+        })
+      )
+    )
+  ).pipe(Layer.provide(BunHttpClient.layer))
   const authenticators = Layer.merge(
     bunAdminAuthenticatorLayer(config),
     bunClientAuthenticatorLayer(config)
@@ -204,11 +223,11 @@ export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
   const dependencies = Layer.mergeAll(
     initializedStorage,
     BunCrypto.layer,
+    BunHttpClient.layer,
     authenticators,
     bunUpstreamTransportLayer,
     bunGatewayTelemetryLayer,
-    Layer.succeed(OAuthClient, makeOpenAiOAuthClient({ transport: controlTransport })),
-    Layer.succeed(UsageProbe, makeCodexUsageProbe({ transport: controlTransport }))
+    controlServices
   )
   const application = Layer.mergeAll(
     dependencies,
