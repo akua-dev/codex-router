@@ -9,6 +9,8 @@
   "dependencies": {
     "@akua-dev/codex-router-codex": "workspace:*",
     "@akua-dev/codex-router-core": "workspace:*",
+    "@effect/platform-browser": "4.0.0-beta.102",
+    "@effect/sql-sqlite-do": "4.0.0-beta.102",
     "effect": "4.0.0-beta.102"
   }
 }
