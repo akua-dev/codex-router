@@ -527,4 +527,3 @@ Initial commits:
 6. Verification fixes and published repository state.
 
 Every push follows fresh tests, type checking, builds, and a requirement audit.
-
