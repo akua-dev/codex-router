@@ -30,7 +30,7 @@ export const makeDurableCredentialVault = (
   cipher: CredentialCipherShape
 ): CredentialVault => ({
   put: Effect.fn("CredentialVault.put")(function* (accountId, credential) {
-    const envelope = yield* cipher.encrypt(accountId, credential).pipe(Effect.mapError(failure))
+    const envelope = yield* cipher.encrypt(accountId, 1, credential).pipe(Effect.mapError(failure))
     const response = yield* Effect.tryPromise({
       try: () =>
         stub.fetch(
@@ -73,6 +73,6 @@ export const makeDurableCredentialVault = (
     const envelope = yield* Schema.decodeUnknownEffect(EncryptedCredentialEnvelope)(raw).pipe(
       Effect.mapError(failure)
     )
-    return yield* cipher.decrypt(accountId, envelope).pipe(Effect.mapError(failure))
+    return yield* cipher.decrypt(accountId, 1, envelope).pipe(Effect.mapError(failure))
   })
 })

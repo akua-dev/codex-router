@@ -19,12 +19,19 @@ export class CredentialCipherError extends Schema.TaggedErrorClass<CredentialCip
 export interface CredentialCipherShape {
   readonly encrypt: (
     accountId: AccountId,
+    generation: number,
     plaintext: Redacted.Redacted<string>
   ) => Effect.Effect<EncryptedCredentialEnvelope, CredentialCipherError>
   readonly decrypt: (
     accountId: AccountId,
+    generation: number,
     envelope: unknown
   ) => Effect.Effect<Redacted.Redacted<string>, CredentialCipherError>
+  readonly decryptForUse: (
+    accountId: AccountId,
+    generation: number,
+    envelope: unknown
+  ) => Effect.Effect<DecryptedCredential, CredentialCipherError>
 }
 
 export class CredentialCipher extends Context.Service<CredentialCipher, CredentialCipherShape>()(
@@ -34,6 +41,11 @@ export class CredentialCipher extends Context.Service<CredentialCipher, Credenti
 export interface CredentialCipherOptions {
   readonly currentVersion: string
   readonly keys: ReadonlyMap<string, CryptoKey>
+}
+
+export interface DecryptedCredential {
+  readonly plaintext: Redacted.Redacted<string>
+  readonly migration?: EncryptedCredentialEnvelope
 }
 
 const cipherFailure = () =>
@@ -69,6 +81,9 @@ const copyToArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   return buffer
 }
 
+const additionalData = (accountId: AccountId, generation: number): ArrayBuffer =>
+  copyToArrayBuffer(encoder.encode(JSON.stringify([accountId, generation])))
+
 export const importAesGcmKey = Effect.fn("importAesGcmKey")(function* (bytes: Uint8Array) {
   if (bytes.byteLength !== 32) {
     return yield* cipherFailure()
@@ -100,14 +115,14 @@ export const importAesGcmKeyFromBase64Url = Effect.fn("importAesGcmKeyFromBase64
 
 export const makeCredentialCipher = (options: CredentialCipherOptions): CredentialCipherShape =>
   CredentialCipher.of({
-    encrypt: Effect.fn("CredentialCipher.encrypt")(function* (accountId, plaintext) {
+    encrypt: Effect.fn("CredentialCipher.encrypt")(function* (accountId, generation, plaintext) {
       const key = options.keys.get(options.currentVersion)
-      if (key === undefined) {
+      if (key === undefined || !Number.isSafeInteger(generation) || generation < 1) {
         return yield* cipherFailure()
       }
       const nonce = crypto.getRandomValues(new Uint8Array(12))
       const algorithm: AesGcmParams = {
-        additionalData: encoder.encode(accountId),
+        additionalData: additionalData(accountId, generation),
         iv: copyToArrayBuffer(nonce),
         name: "AES-GCM",
         tagLength: 128
@@ -122,10 +137,10 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
         nonce: encodeBase64Url(nonce)
       })
     }),
-    decrypt: Effect.fn("CredentialCipher.decrypt")(function* (accountId, input) {
+    decrypt: Effect.fn("CredentialCipher.decrypt")(function* (accountId, generation, input) {
       const envelope = yield* decodeEnvelope(input).pipe(Effect.mapError(cipherFailure))
       const key = options.keys.get(envelope.keyVersion)
-      if (key === undefined) {
+      if (key === undefined || !Number.isSafeInteger(generation) || generation < 1) {
         return yield* cipherFailure()
       }
       const nonce = yield* Effect.try({
@@ -140,7 +155,7 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
         catch: cipherFailure
       })
       const algorithm: AesGcmParams = {
-        additionalData: encoder.encode(accountId),
+        additionalData: additionalData(accountId, generation),
         iv: copyToArrayBuffer(nonce),
         name: "AES-GCM",
         tagLength: 128
@@ -150,5 +165,24 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
         catch: cipherFailure
       })
       return Redacted.make(decoder.decode(plaintext))
-    })
+    }),
+    decryptForUse: Effect.fn("CredentialCipher.decryptForUse")(
+      function* (accountId, generation, input) {
+        const envelope = yield* decodeEnvelope(input).pipe(Effect.mapError(cipherFailure))
+        const plaintext = yield* makeCredentialCipher(options).decrypt(
+          accountId,
+          generation,
+          envelope
+        )
+        if (envelope.keyVersion === options.currentVersion) {
+          return { plaintext }
+        }
+        const migration = yield* makeCredentialCipher(options).encrypt(
+          accountId,
+          generation,
+          plaintext
+        )
+        return { migration, plaintext }
+      }
+    )
   })

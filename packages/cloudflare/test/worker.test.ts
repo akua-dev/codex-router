@@ -78,8 +78,14 @@ describe("worker bindings", () => {
             weeklyUsedPercent: 10
           }
         ]),
+        CODEX_ROUTER_ADMIN_TOKEN: "admin-secret-value",
         CODEX_ROUTER_CLIENT_TOKEN: "client-secret-value",
-        CODEX_ROUTER_CREDENTIAL_KEY: base64Url(crypto.getRandomValues(new Uint8Array(32))),
+        CODEX_ROUTER_CREDENTIAL_KEYS_JSON: JSON.stringify({
+          currentVersion: "v1",
+          keys: {
+            v1: base64Url(crypto.getRandomValues(new Uint8Array(32)))
+          }
+        }),
         ROUTER_STATE: namespace
       })
 
@@ -100,8 +106,12 @@ describe("worker bindings", () => {
           CF_AIG_GATEWAY_ID: "router",
           CF_AIG_TOKEN: "token",
           CODEX_ROUTER_ACCOUNTS_JSON: "[]",
+          CODEX_ROUTER_ADMIN_TOKEN: "admin",
           CODEX_ROUTER_CLIENT_TOKEN: "client",
-          CODEX_ROUTER_CREDENTIAL_KEY: base64Url(new Uint8Array(32)),
+          CODEX_ROUTER_CREDENTIAL_KEYS_JSON: JSON.stringify({
+            currentVersion: "v1",
+            keys: { v1: base64Url(new Uint8Array(32)) }
+          }),
           ROUTER_STATE: {}
         })
       )

@@ -30,10 +30,16 @@ export interface WorkerRuntimeConfig {
   readonly aiGatewayGatewayId: string
   readonly aiGatewayCustomProviderSlug: string
   readonly aiGatewayRunToken: Redacted.Redacted<string>
+  readonly adminToken: Redacted.Redacted<string>
   readonly clientToken: Redacted.Redacted<string>
-  readonly credentialKey: Redacted.Redacted<string>
+  readonly credentialKeyring: CredentialKeyringConfig
   readonly accounts: ReadonlyArray<WorkerConfiguredAccount>
   readonly routerState: RouterStateNamespace
+}
+
+export interface CredentialKeyringConfig {
+  readonly currentVersion: string
+  readonly keys: ReadonlyMap<string, Redacted.Redacted<string>>
 }
 
 export class WorkerConfigError extends Schema.TaggedErrorClass<WorkerConfigError>()(
@@ -48,9 +54,10 @@ const Bindings = Schema.Struct({
   CF_AIG_GATEWAY_ID: Schema.String,
   CF_AIG_CUSTOM_PROVIDER_SLUG: Schema.String,
   CF_AIG_TOKEN: Schema.String,
+  CODEX_ROUTER_ADMIN_TOKEN: Schema.String.check(Schema.isNonEmpty()),
   CODEX_ROUTER_CLIENT_TOKEN: Schema.String,
-  CODEX_ROUTER_CREDENTIAL_KEY: Schema.String,
-  CODEX_ROUTER_ACCOUNTS_JSON: Schema.String,
+  CODEX_ROUTER_CREDENTIAL_KEYS_JSON: Schema.String,
+  CODEX_ROUTER_ACCOUNTS_JSON: Schema.optionalKey(Schema.String),
   ROUTER_STATE: Schema.Unknown
 })
 
@@ -58,6 +65,16 @@ const decodeBindings = Schema.decodeUnknownEffect(Bindings)
 const decodeAccounts = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(WorkerConfiguredAccount))
 )
+const KeyVersion = Schema.String.check(
+  Schema.isMinLength(1),
+  Schema.isMaxLength(64),
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._-]*$/u)
+)
+const KeyringJson = Schema.Struct({
+  currentVersion: KeyVersion,
+  keys: Schema.Record(KeyVersion, Schema.String)
+})
+const decodeKeyring = Schema.decodeUnknownEffect(Schema.fromJsonString(KeyringJson))
 
 const configFailure = () =>
   new WorkerConfigError({
@@ -91,25 +108,35 @@ const credentialKeyHasValidLength = (value: string): boolean => {
 
 export const decodeWorkerBindings = Effect.fn("decodeWorkerBindings")(function* (input: unknown) {
   const bindings = yield* decodeBindings(input).pipe(Effect.mapError(configFailure))
-  const accounts = yield* decodeAccounts(bindings.CODEX_ROUTER_ACCOUNTS_JSON).pipe(
+  const accounts = yield* decodeAccounts(bindings.CODEX_ROUTER_ACCOUNTS_JSON ?? "[]").pipe(
     Effect.mapError(configFailure)
   )
+  const decodedKeyring = yield* decodeKeyring(bindings.CODEX_ROUTER_CREDENTIAL_KEYS_JSON).pipe(
+    Effect.mapError(configFailure)
+  )
+  const keyEntries = Object.entries(decodedKeyring.keys)
   if (
-    accounts.length === 0 ||
     !isRouterStateNamespace(bindings.ROUTER_STATE) ||
-    !credentialKeyHasValidLength(bindings.CODEX_ROUTER_CREDENTIAL_KEY)
+    bindings.CODEX_ROUTER_ADMIN_TOKEN === bindings.CODEX_ROUTER_CLIENT_TOKEN ||
+    keyEntries.length === 0 ||
+    decodedKeyring.keys[decodedKeyring.currentVersion] === undefined ||
+    keyEntries.some(([, key]) => !credentialKeyHasValidLength(key))
   ) {
     return yield* configFailure()
   }
 
   return {
     accounts,
+    adminToken: Redacted.make(bindings.CODEX_ROUTER_ADMIN_TOKEN),
     aiGatewayAccountId: bindings.CF_AIG_ACCOUNT_ID,
     aiGatewayCustomProviderSlug: bindings.CF_AIG_CUSTOM_PROVIDER_SLUG,
     aiGatewayGatewayId: bindings.CF_AIG_GATEWAY_ID,
     aiGatewayRunToken: Redacted.make(bindings.CF_AIG_TOKEN),
     clientToken: Redacted.make(bindings.CODEX_ROUTER_CLIENT_TOKEN),
-    credentialKey: Redacted.make(bindings.CODEX_ROUTER_CREDENTIAL_KEY),
+    credentialKeyring: {
+      currentVersion: decodedKeyring.currentVersion,
+      keys: new Map(keyEntries.map(([version, key]) => [version, Redacted.make(key)]))
+    },
     routerState: bindings.ROUTER_STATE
   } satisfies WorkerRuntimeConfig
 })

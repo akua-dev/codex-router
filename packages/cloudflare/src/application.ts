@@ -184,10 +184,17 @@ export const makeCloudflareWorkerApplication = async (
   config: WorkerRuntimeConfig,
   fetchImplementation: (request: Request) => Promise<Response> = fetch
 ): Promise<CloudflareWorkerApplication> => {
-  const key = await Effect.runPromise(importAesGcmKeyFromBase64Url(config.credentialKey))
+  const keys = await Effect.runPromise(
+    Effect.forEach(
+      config.credentialKeyring.keys,
+      ([version, encoded]) =>
+        importAesGcmKeyFromBase64Url(encoded).pipe(Effect.map((key) => [version, key] as const)),
+      { concurrency: "unbounded" }
+    ).pipe(Effect.map((entries) => new Map(entries)))
+  )
   const cipher = makeCredentialCipher({
-    currentVersion: "v1",
-    keys: new Map([["v1", key]])
+    currentVersion: config.credentialKeyring.currentVersion,
+    keys
   })
   const objectId = config.routerState.idFromName("global")
   const stub = config.routerState.get(objectId)
