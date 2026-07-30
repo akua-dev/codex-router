@@ -38,6 +38,36 @@ const normalizeRows = (input: ReadonlyArray<unknown>): Array<Record<string, Test
     return output
   })
 
+const cursor = (rows: Array<Record<string, TestSqlValue>>, columnNames: ReadonlyArray<string>) => ({
+  columnNames,
+  *raw(): IterableIterator<Array<TestSqlValue>> {
+    for (const row of rows) {
+      yield columnNames.map((column) => row[column] ?? null)
+    }
+  },
+  toArray: () => rows
+})
+
+const transaction = async <A>(
+  database: Database,
+  body: (transaction: { readonly rollback: () => void }) => Promise<A>
+): Promise<A> => {
+  database.exec("BEGIN IMMEDIATE")
+  let rolledBack = false
+  try {
+    const result = await body({
+      rollback: () => {
+        rolledBack = true
+      }
+    })
+    database.exec(rolledBack ? "ROLLBACK" : "COMMIT")
+    return result
+  } catch (error) {
+    database.exec("ROLLBACK")
+    throw error
+  }
+}
+
 const base64Url = (bytes: Uint8Array): string => {
   let binary = ""
   for (const byte of bytes) {
@@ -63,21 +93,23 @@ describe("RouterStateObject subscription coordination", () => {
       exec(query: string, ...bindings: Array<string | number | null | ArrayBuffer>) {
         if (bindings.length === 0 && query.includes(";")) {
           database.exec(query)
-          return { toArray: () => [] }
+          return cursor([], [])
         }
         const normalizedBindings = bindings.map((value) =>
           value instanceof ArrayBuffer ? new Uint8Array(value) : value
         )
-        const rows = normalizeRows(database.query(query).all(...normalizedBindings))
-        return {
-          toArray: () => rows
-        }
+        const statement = database.query(query)
+        const rows = normalizeRows(statement.all(...normalizedBindings))
+        return cursor(rows, statement.columnNames)
       }
     }
     const state = {
       blockConcurrencyWhile: <A>(body: () => Promise<A>) => body(),
       storage: {
         sql,
+        transaction: <A>(
+          body: (transactionHandle: { readonly rollback: () => void }) => Promise<A>
+        ) => transaction(database, body),
         transactionSync: <A>(body: () => A) => body()
       }
     }
@@ -125,6 +157,11 @@ describe("RouterStateObject subscription coordination", () => {
     expect(acquired.status).toBe(200)
     expect(grant).toMatchObject({ accountId: "account-a" })
     expect(JSON.stringify(grant)).not.toContain("access-secret")
+    expect(
+      database
+        .query("SELECT migration_id, name FROM effect_sql_migrations ORDER BY migration_id")
+        .all()
+    ).toEqual([{ migration_id: 1, name: "router_state" }])
     database.close()
   })
 
@@ -136,20 +173,24 @@ describe("RouterStateObject subscription coordination", () => {
           exec(query: string, ...bindings: Array<string | number | null | ArrayBuffer>) {
             if (bindings.length === 0 && query.includes(";")) {
               database.exec(query)
-              return { toArray: () => [] }
+              return cursor([], [])
             }
             const normalizedBindings = bindings.map((value) =>
               value instanceof ArrayBuffer ? new Uint8Array(value) : value
             )
-            const rows = database.query(query).all(...normalizedBindings)
+            const statement = database.query(query)
+            const rows = statement.all(...normalizedBindings)
             const decoded = normalizeRows(rows)
-            return { toArray: () => decoded }
+            return cursor(decoded, statement.columnNames)
           }
         }
         const state = {
           blockConcurrencyWhile: <A>(body: () => Promise<A>) => body(),
           storage: {
             sql,
+            transaction: <A>(
+              body: (transactionHandle: { readonly rollback: () => void }) => Promise<A>
+            ) => transaction(database, body),
             transactionSync: <A>(body: () => A) => body()
           }
         }

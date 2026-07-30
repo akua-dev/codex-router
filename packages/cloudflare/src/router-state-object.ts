@@ -4,22 +4,34 @@ import {
   SubscriptionCredential,
   UsageAuthenticationError,
   makeCodexUsageProbe,
-  makeOpenAiOAuthClient
+  makeOpenAiOAuthClient,
+  secureCompare
 } from "@akua-dev/codex-router-codex"
 import {
-  AccountBlock,
   AccountId,
   Candidate,
-  LeaseToken,
   UsageSnapshot,
   UsageWindow,
   defaultRoutingConfig,
-  selectAccount,
-  type AccountId as AccountIdType,
-  type RoutingConfig
+  type AccountId as AccountIdType
 } from "@akua-dev/codex-router-core"
+import type { DurableObjectStorage } from "@cloudflare/workers-types"
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
-import { Effect, Option, Redacted, Result, Schema } from "effect"
+import * as SqliteClient from "@effect/sql-sqlite-do/SqliteClient"
+import * as SqliteMigrator from "@effect/sql-sqlite-do/SqliteMigrator"
+import {
+  Clock,
+  Crypto,
+  Effect,
+  Layer,
+  ManagedRuntime,
+  Option,
+  Redacted,
+  Result,
+  Schema
+} from "effect"
+import { FetchHttpClient, HttpClient } from "effect/unstable/http"
+import type { SqlError } from "effect/unstable/sql/SqlError"
 import { decodeWorkerBindings, type WorkerRuntimeConfig } from "./config.ts"
 import { makeCloudflareCodexControlTransport } from "./control-transport.ts"
 import { decodeCredentialBundle, encodeCredentialBundle } from "./credential-bundle.ts"
@@ -28,12 +40,20 @@ import {
   importCredentialKeyring,
   type CredentialCipherShape
 } from "./credential-cipher.ts"
+import { routerStateMigrations } from "./router-state-migrations.ts"
+import {
+  RouterStateRepository,
+  routerStateRepositoryLayer,
+  type RouterAccountRow,
+  type RouterUsageRow,
+  type SeedAccountRecord
+} from "./router-state-repository.ts"
 
 type SqlValue = ArrayBuffer | string | number | null
-type SqlRow = Record<string, SqlValue>
 
 interface SqlCursor {
-  readonly toArray: () => Array<SqlRow>
+  readonly columnNames: ReadonlyArray<string>
+  readonly raw: () => IterableIterator<Array<SqlValue>>
 }
 
 interface RouterSqlStorage {
@@ -42,51 +62,15 @@ interface RouterSqlStorage {
 
 interface RouterObjectStorage {
   readonly sql: RouterSqlStorage
-  readonly transactionSync: <A>(body: () => A) => A
+  readonly transaction: <A>(
+    body: (transaction: { readonly rollback: () => void }) => Promise<A>
+  ) => Promise<A>
 }
 
 interface RouterObjectState {
   readonly storage: RouterObjectStorage
   readonly blockConcurrencyWhile: <A>(body: () => Promise<A>) => Promise<A>
 }
-
-const AccountRow = Schema.Struct({
-  account_id: Schema.String,
-  ciphertext: Schema.String,
-  credential_generation: Schema.Int.check(Schema.isGreaterThan(0)),
-  enabled: Schema.Number,
-  expires_at: Schema.Number,
-  key_version: Schema.String,
-  nonce: Schema.String,
-  requires_reauth: Schema.Number
-})
-type AccountRow = typeof AccountRow.Type
-
-const UsageRow = Schema.Struct({
-  account_id: Schema.String,
-  credential_generation: Schema.Int.check(Schema.isGreaterThan(0)),
-  observed_at: Schema.Number,
-  payload_json: Schema.String
-})
-type UsageRow = typeof UsageRow.Type
-
-const AssignmentRow = Schema.Struct({
-  account_id: Schema.String,
-  session_key: Schema.String
-})
-
-const CountRow = Schema.Struct({
-  account_id: Schema.String,
-  count: Schema.Number
-})
-
-const HealthRow = Schema.Struct({
-  account_id: Schema.String,
-  block_kind: Schema.NullOr(Schema.Literals(["quota", "transient"])),
-  requires_reauth: Schema.Number,
-  retry_at: Schema.NullOr(Schema.Number)
-})
-type HealthRow = typeof HealthRow.Type
 
 const RouteAcquirePayload = Schema.Struct({
   now: Schema.Number,
@@ -139,7 +123,6 @@ const SeedPayload = Schema.Struct({
     })
   )
 })
-type SeedAccount = (typeof SeedPayload.Type)["accounts"][number]
 
 const AdminCredentialPayload = Schema.Struct({
   accessToken: Schema.String.check(Schema.isNonEmpty()),
@@ -159,250 +142,135 @@ const AdminAccountPayload = Schema.Struct({
   accountId: Schema.String
 })
 
-const migration = `
-  CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS assignments (
-    session_key TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS reservations (
-    lease_token TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    session_key TEXT,
-    created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS reservations_account_expiry
-    ON reservations(account_id, expires_at);
-  CREATE TABLE IF NOT EXISTS blocks (
-    account_id TEXT PRIMARY KEY,
-    block_kind TEXT CHECK(block_kind IN ('quota', 'transient') OR block_kind IS NULL),
-    retry_at INTEGER,
-    requires_reauth INTEGER NOT NULL DEFAULT 0 CHECK(requires_reauth IN (0, 1))
-  );
-  CREATE TABLE IF NOT EXISTS subscription_accounts (
-    account_id TEXT PRIMARY KEY,
-    enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0, 1)),
-    credential_generation INTEGER NOT NULL CHECK(credential_generation > 0),
-    expires_at INTEGER NOT NULL,
-    requires_reauth INTEGER NOT NULL DEFAULT 0 CHECK(requires_reauth IN (0, 1)),
-    key_version TEXT NOT NULL,
-    nonce TEXT NOT NULL,
-    ciphertext TEXT NOT NULL,
-    updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS subscription_usage (
-    account_id TEXT PRIMARY KEY,
-    credential_generation INTEGER NOT NULL CHECK(credential_generation > 0),
-    observed_at INTEGER NOT NULL,
-    payload_json TEXT NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS refresh_claims (
-    account_id TEXT NOT NULL,
-    operation TEXT NOT NULL CHECK(operation IN ('credential', 'usage')),
-    credential_generation INTEGER NOT NULL,
-    token TEXT NOT NULL UNIQUE,
-    expires_at INTEGER NOT NULL,
-    PRIMARY KEY(account_id, operation)
-  );
-  INSERT OR IGNORE INTO schema_migrations(version, applied_at)
-  VALUES (2, CAST(strftime('%s', 'now') AS INTEGER) * 1000);
-`
+export class RouterStateRequestError extends Schema.TaggedErrorClass<RouterStateRequestError>()(
+  "RouterStateRequestError",
+  {
+    message: Schema.String
+  }
+) {}
 
-const decodeRows = <A>(schema: Schema.Decoder<A>, rows: Array<SqlRow>): ReadonlyArray<A> =>
-  Schema.decodeUnknownSync(Schema.Array(schema))(rows)
+const requestFailure = () =>
+  new RouterStateRequestError({
+    message: "The Durable Object request is invalid"
+  })
+
+const decodeBody = Effect.fn("RouterStateObject.decodeBody")(function* <A>(
+  request: Request,
+  schema: Schema.Decoder<A>
+) {
+  const contentLength = request.headers.get("content-length")
+  if (
+    contentLength !== null &&
+    (!Number.isFinite(Number(contentLength)) || Number(contentLength) > 65_536)
+  ) {
+    return yield* requestFailure()
+  }
+  const body = yield* Effect.tryPromise({
+    try: () => request.json(),
+    catch: requestFailure
+  })
+  return yield* Schema.decodeUnknownEffect(schema)(body).pipe(Effect.mapError(requestFailure))
+})
 
 const json = (value: unknown, init?: ResponseInit): Response => Response.json(value, init)
 
-const decodeBody = async <A>(request: Request, schema: Schema.Decoder<A>): Promise<A> => {
-  const contentLength = request.headers.get("content-length")
-  if (contentLength !== null && Number(contentLength) > 65_536) {
-    throw new Error("request too large")
-  }
-  const body: unknown = await request.json()
-  return Effect.runPromise(Schema.decodeUnknownEffect(schema)(body))
-}
-
-const cleanup = (sql: RouterSqlStorage, now: number, config: RoutingConfig): void => {
-  sql.exec("DELETE FROM reservations WHERE expires_at <= ?", now)
-  sql.exec("DELETE FROM assignments WHERE updated_at + ? <= ?", config.assignmentTtlMs, now)
-  sql.exec("DELETE FROM refresh_claims WHERE expires_at <= ?", now)
-  sql.exec(
-    `UPDATE blocks
-       SET block_kind = NULL, retry_at = NULL
-     WHERE retry_at IS NOT NULL AND retry_at <= ?`,
-    now
-  )
-  sql.exec("DELETE FROM blocks WHERE block_kind IS NULL AND requires_reauth = 0")
-}
-
-const accountRows = (sql: RouterSqlStorage): ReadonlyArray<AccountRow> =>
-  decodeRows(
-    AccountRow,
-    sql
-      .exec(
-        `SELECT account_id, enabled, credential_generation, expires_at,
-                requires_reauth, key_version, nonce, ciphertext
-           FROM subscription_accounts
-          ORDER BY account_id`
-      )
-      .toArray()
-  )
-
-const accountRow = (sql: RouterSqlStorage, accountId: AccountIdType): AccountRow | undefined =>
-  decodeRows(
-    AccountRow,
-    sql
-      .exec(
-        `SELECT account_id, enabled, credential_generation, expires_at,
-                requires_reauth, key_version, nonce, ciphertext
-           FROM subscription_accounts
-          WHERE account_id = ?`,
-        accountId
-      )
-      .toArray()
-  )[0]
-
-const usageRows = (sql: RouterSqlStorage): ReadonlyMap<AccountIdType, UsageRow> =>
-  new Map(
-    decodeRows(
-      UsageRow,
-      sql
-        .exec(
-          `SELECT account_id, credential_generation, observed_at, payload_json
-             FROM subscription_usage`
-        )
-        .toArray()
-    ).map((row) => [AccountId.make(row.account_id), row])
-  )
-
-const activeCounts = (sql: RouterSqlStorage): ReadonlyMap<AccountIdType, number> =>
-  new Map(
-    decodeRows(
-      CountRow,
-      sql
-        .exec("SELECT account_id, COUNT(*) AS count FROM reservations GROUP BY account_id")
-        .toArray()
-    ).map((row) => [AccountId.make(row.account_id), row.count])
-  )
-
-const healthRows = (sql: RouterSqlStorage): ReadonlyMap<AccountIdType, HealthRow> =>
-  new Map(
-    decodeRows(
-      HealthRow,
-      sql.exec("SELECT account_id, block_kind, retry_at, requires_reauth FROM blocks").toArray()
-    ).map((row) => [AccountId.make(row.account_id), row])
-  )
-
-const currentAccount = (
-  sql: RouterSqlStorage,
-  sessionKey: string | undefined
-): AccountIdType | undefined => {
-  if (sessionKey === undefined) {
-    return undefined
-  }
-  const row = decodeRows(
-    AssignmentRow,
-    sql
-      .exec("SELECT session_key, account_id FROM assignments WHERE session_key = ?", sessionKey)
-      .toArray()
-  )[0]
-  return row === undefined ? undefined : AccountId.make(row.account_id)
-}
-
-const blockFromRow = (row: HealthRow | undefined): AccountBlock | undefined => {
-  if (row?.block_kind === null || row?.block_kind === undefined) {
-    return undefined
-  }
-  return AccountBlock.make({
-    kind: row.block_kind,
-    ...(row.retry_at === null ? {} : { retryAt: row.retry_at })
-  })
-}
-
-const decodeUsage = (row: UsageRow | undefined): UsageSnapshot | undefined => {
+const decodeUsage = (row: RouterUsageRow | undefined): UsageSnapshot | undefined => {
   if (row === undefined) {
     return undefined
   }
-  try {
-    return Schema.decodeUnknownSync(UsageSnapshot)(JSON.parse(row.payload_json))
-  } catch {
-    return undefined
-  }
+  return Schema.decodeUnknownOption(Schema.fromJsonString(UsageSnapshot))(row.payload_json)
+    .valueOrUndefined
 }
 
-const envelopeFromRow = (row: AccountRow): EncryptedCredentialEnvelope =>
+const envelopeFromRow = (row: RouterAccountRow): EncryptedCredentialEnvelope =>
   EncryptedCredentialEnvelope.make({
     ciphertext: row.ciphertext,
     keyVersion: row.key_version,
     nonce: row.nonce
   })
 
-const copyToArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
-  const output = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(output).set(bytes)
-  return output
-}
-
-const digest = (value: string): Promise<ArrayBuffer> =>
-  crypto.subtle.digest("SHA-256", copyToArrayBuffer(new TextEncoder().encode(value)))
-
-const constantTimeHashEqual = async (actual: string, expected: string): Promise<boolean> => {
-  const [leftBuffer, rightBuffer] = await Promise.all([digest(actual), digest(expected)])
-  const left = new Uint8Array(leftBuffer)
-  const right = new Uint8Array(rightBuffer)
-  let difference = 0
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= (left[index] ?? 0) ^ (right[index] ?? 0)
-  }
-  return difference === 0
-}
+const accountSummary = (
+  row: RouterAccountRow,
+  usage: RouterUsageRow | undefined
+): Readonly<Record<string, unknown>> => ({
+  accountId: row.account_id,
+  enabled: row.enabled === 1,
+  expiresAt: row.expires_at,
+  generation: row.credential_generation,
+  requiresReauthentication: row.requires_reauth === 1,
+  ...(usage === undefined ? {} : { usageObservedAt: usage.observed_at })
+})
 
 export class RouterStateObject {
   readonly #cipher: Promise<CredentialCipherShape>
   readonly #config = defaultRoutingConfig
   readonly #environment: Promise<WorkerRuntimeConfig>
   readonly #ready: Promise<void>
-  readonly #state: RouterObjectState
+  readonly #runtime: ManagedRuntime.ManagedRuntime<
+    Crypto.Crypto | HttpClient.HttpClient | RouterStateRepository,
+    SqliteMigrator.MigrationError | SqlError
+  >
 
   constructor(state: RouterObjectState, environment: unknown) {
-    this.#state = state
-    this.#environment = Effect.runPromise(decodeWorkerBindings(environment))
+    const sqlLayer = SqliteClient.layer({
+      storage: state.storage as DurableObjectStorage,
+      spanAttributes: {
+        "db.namespace": "codex-router",
+        "service.name": "codex-router-cloudflare-do"
+      }
+    })
+    const migrations = SqliteMigrator.layer({
+      loader: routerStateMigrations
+    }).pipe(Layer.provide(sqlLayer))
+    const platform = Layer.merge(BrowserCrypto.layer, FetchHttpClient.layer)
+    const infrastructure = Layer.mergeAll(sqlLayer, migrations, platform)
+    const repository = routerStateRepositoryLayer.pipe(Layer.provide(infrastructure))
+    this.#runtime = ManagedRuntime.make(Layer.merge(repository, platform))
+    this.#environment = this.#runtime.runPromise(decodeWorkerBindings(environment))
     this.#cipher = this.#environment.then((config) =>
-      Effect.runPromise(
-        importCredentialKeyring(config.credentialKeyring).pipe(Effect.provide(BrowserCrypto.layer))
+      this.#runtime.runPromise(importCredentialKeyring(config.credentialKeyring))
+    )
+    this.#ready = state.blockConcurrencyWhile(() => this.#runtime.runPromise(this.#initialize()))
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    await this.#ready
+    return this.#runtime.runPromise(
+      this.#route(request).pipe(
+        Effect.catchCause(() =>
+          Effect.succeed(json({ error: "invalid_state_request" }, { status: 400 }))
+        )
       )
     )
-    this.#ready = state.blockConcurrencyWhile(async () => {
-      state.storage.sql.exec(migration)
-      const [config, cipher] = await Promise.all([this.#environment, this.#cipher])
-      const accounts = await Promise.all(
-        config.accounts.map(async (account): Promise<SeedAccount> => {
-          const credential = SubscriptionCredential.make({
-            accessToken: account.accessToken,
-            accountId: account.accountId,
-            expiresAt: account.expiresAt,
-            generation: 1,
-            providerAccountId: account.providerAccountId,
-            refreshToken: account.refreshToken
-          })
-          const encrypted = await Effect.runPromise(
-            cipher.encrypt(
+  }
+
+  #initialize() {
+    const environment = this.#environment
+    const cipherPromise = this.#cipher
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      const [config, cipher] = yield* Effect.all([
+        Effect.promise(() => environment),
+        Effect.promise(() => cipherPromise)
+      ])
+      const accounts = yield* Effect.forEach(
+        config.accounts,
+        (account) =>
+          Effect.gen(function* () {
+            const credential = SubscriptionCredential.make({
+              accessToken: account.accessToken,
+              accountId: account.accountId,
+              expiresAt: account.expiresAt,
+              generation: 1,
+              providerAccountId: account.providerAccountId,
+              refreshToken: account.refreshToken
+            })
+            const encrypted = yield* cipher.encrypt(
               account.accountId,
               credential.generation,
               encodeCredentialBundle(credential)
             )
-          )
-          return {
-            accountId: account.accountId,
-            credential: encrypted,
-            expiresAt: credential.expiresAt,
-            generation: credential.generation,
-            usage: UsageSnapshot.make({
+            const usage = UsageSnapshot.make({
               accountId: account.accountId,
               observedAt: account.observedAt,
               short: UsageWindow.make({
@@ -414,718 +282,509 @@ export class RouterStateObject {
                 usedPercent: account.weeklyUsedPercent
               })
             })
-          }
-        })
+            return {
+              accountId: account.accountId,
+              credential: encrypted,
+              expiresAt: credential.expiresAt,
+              generation: credential.generation,
+              usage,
+              usageJson: JSON.stringify(usage)
+            } satisfies SeedAccountRecord
+          }),
+        { concurrency: "unbounded" }
       )
-      this.#insertSeedAccounts(accounts)
+      const now = yield* Clock.currentTimeMillis
+      yield* repository.insertSeedAccounts(accounts, now)
     })
   }
 
-  async fetch(request: Request): Promise<Response> {
-    await this.#ready
-    const path = new URL(request.url).pathname
-    try {
+  #route(request: Request) {
+    const isInternalRequest = this.#isInternalRequest.bind(this)
+    const seed = this.#seed.bind(this)
+    const routeAcquire = this.#routeAcquire.bind(this)
+    const renew = this.#renew.bind(this)
+    const release = this.#release.bind(this)
+    const recordResponse = this.#recordResponse.bind(this)
+    const summary = this.#summary.bind(this)
+    const maintenance = this.#maintenance.bind(this)
+    const adminList = this.#adminList.bind(this)
+    const adminPutCredential = this.#adminPutCredential.bind(this)
+    const adminEnabled = this.#adminEnabled.bind(this)
+    const adminRemove = this.#adminRemove.bind(this)
+    const keyVersions = this.#keyVersions.bind(this)
+    return Effect.gen(function* () {
+      const path = new URL(request.url).pathname
       if (path === "/seed" || path.startsWith("/admin/") || path === "/maintenance/sweep") {
-        if (!(await this.#isInternalRequest(request))) {
+        if (!(yield* isInternalRequest(request))) {
           return json({ error: "unauthorized" }, { status: 401 })
         }
       }
       if (path === "/seed") {
-        return await this.#seed(request)
+        return yield* seed(request)
       }
       if (path === "/route/acquire") {
-        return await this.#routeAcquire(request)
+        return yield* routeAcquire(request)
       }
       if (path === "/route/renew" || path === "/renew") {
-        return await this.#renew(request)
+        return yield* renew(request)
       }
       if (path === "/route/release" || path === "/release") {
-        return await this.#release(request)
+        return yield* release(request)
       }
       if (path === "/route/record-response") {
-        return await this.#recordResponse(request)
+        return yield* recordResponse(request)
       }
       if (path === "/summary") {
-        return await this.#summary(request)
+        return yield* summary(request)
       }
       if (path === "/maintenance/sweep") {
-        return await this.#maintenance(request)
+        return yield* maintenance(request)
       }
       if (path === "/admin/accounts/list") {
-        return this.#adminList()
+        return yield* adminList()
       }
       if (path === "/admin/accounts/credential") {
-        return await this.#adminPutCredential(request)
+        return yield* adminPutCredential(request)
       }
       if (path === "/admin/accounts/enabled") {
-        return await this.#adminEnabled(request)
+        return yield* adminEnabled(request)
       }
       if (path === "/admin/accounts/remove") {
-        return await this.#adminRemove(request)
+        return yield* adminRemove(request)
       }
       if (path === "/admin/key-versions") {
-        return this.#keyVersions()
+        return yield* keyVersions()
       }
       return json({ error: "not_found" }, { status: 404 })
-    } catch {
-      return json({ error: "invalid_state_request" }, { status: 400 })
-    }
-  }
-
-  async #isInternalRequest(request: Request): Promise<boolean> {
-    const actual = request.headers.get("x-ai-router-internal-token")
-    if (actual === null) {
-      return false
-    }
-    const config = await this.#environment
-    return constantTimeHashEqual(actual, Redacted.value(config.adminToken))
-  }
-
-  async #seed(request: Request): Promise<Response> {
-    const input = await decodeBody(request, SeedPayload)
-    return json({ inserted: this.#insertSeedAccounts(input.accounts) })
-  }
-
-  #insertSeedAccounts(accounts: ReadonlyArray<SeedAccount>): number {
-    let inserted = 0
-    this.#state.storage.transactionSync(() => {
-      const sql = this.#state.storage.sql
-      for (const account of accounts) {
-        if (accountRow(sql, AccountId.make(account.accountId)) !== undefined) {
-          continue
-        }
-        sql.exec(
-          `INSERT INTO subscription_accounts(
-             account_id, enabled, credential_generation, expires_at, requires_reauth,
-             key_version, nonce, ciphertext, updated_at
-           ) VALUES (?, 1, ?, ?, 0, ?, ?, ?, ?)`,
-          account.accountId,
-          account.generation,
-          account.expiresAt,
-          account.credential.keyVersion,
-          account.credential.nonce,
-          account.credential.ciphertext,
-          Date.now()
-        )
-        sql.exec(
-          `INSERT INTO subscription_usage(
-             account_id, credential_generation, observed_at, payload_json
-           ) VALUES (?, ?, ?, ?)`,
-          account.accountId,
-          account.generation,
-          account.usage.observedAt,
-          JSON.stringify(account.usage)
-        )
-        inserted += 1
-      }
-    })
-    return inserted
-  }
-
-  #claim(
-    accountId: AccountIdType,
-    operation: "credential" | "usage",
-    generation: number,
-    now: number
-  ): string | undefined {
-    return this.#state.storage.transactionSync(() => {
-      const sql = this.#state.storage.sql
-      sql.exec(
-        "DELETE FROM refresh_claims WHERE account_id = ? AND operation = ? AND expires_at <= ?",
-        accountId,
-        operation,
-        now
-      )
-      const token = crypto.randomUUID()
-      sql.exec(
-        `INSERT OR IGNORE INTO refresh_claims(
-           account_id, operation, credential_generation, token, expires_at
-         ) VALUES (?, ?, ?, ?, ?)`,
-        accountId,
-        operation,
-        generation,
-        token,
-        now + 30_000
-      )
-      const row = decodeRows(
-        Schema.Struct({ token: Schema.String }),
-        sql
-          .exec(
-            "SELECT token FROM refresh_claims WHERE account_id = ? AND operation = ?",
-            accountId,
-            operation
-          )
-          .toArray()
-      )[0]
-      return row?.token === token ? token : undefined
     })
   }
 
-  #releaseClaim(token: string): void {
-    this.#state.storage.sql.exec("DELETE FROM refresh_claims WHERE token = ?", token)
-  }
-
-  async #credentialFromRow(row: AccountRow): Promise<{
-    readonly credential: SubscriptionCredential
-    readonly envelope: EncryptedCredentialEnvelope
-  }> {
-    const cipher = await this.#cipher
-    const accountId = AccountId.make(row.account_id)
-    const decrypted = await Effect.runPromise(
-      cipher.decryptForUse(accountId, row.credential_generation, envelopeFromRow(row))
-    )
-    if (decrypted.migration !== undefined) {
-      this.#state.storage.sql.exec(
-        `UPDATE subscription_accounts
-            SET key_version = ?, nonce = ?, ciphertext = ?, updated_at = ?
-          WHERE account_id = ? AND credential_generation = ?`,
-        decrypted.migration.keyVersion,
-        decrypted.migration.nonce,
-        decrypted.migration.ciphertext,
-        Date.now(),
-        accountId,
-        row.credential_generation
-      )
-    }
-    const credential = await Effect.runPromise(
-      decodeCredentialBundle(accountId, row.credential_generation, decrypted.plaintext)
-    )
-    return {
-      credential,
-      envelope: decrypted.migration ?? envelopeFromRow(row)
-    }
-  }
-
-  async #ensureCredential(source: AccountRow, now: number): Promise<boolean> {
-    if (
-      source.enabled !== 1 ||
-      source.requires_reauth === 1 ||
-      source.expires_at > now + 5 * 60_000
-    ) {
-      return source.enabled === 1 && source.requires_reauth === 0
-    }
-    const accountId = AccountId.make(source.account_id)
-    const claim = this.#claim(accountId, "credential", source.credential_generation, now)
-    if (claim === undefined) {
-      return false
-    }
-    try {
-      const { credential } = await this.#credentialFromRow(source)
-      const config = await this.#environment
-      const transport = makeCloudflareCodexControlTransport(config)
-      const oauth = makeOpenAiOAuthClient({ transport })
-      const refreshed = await Effect.runPromise(Effect.result(oauth.refresh(credential)))
-      if (Result.isFailure(refreshed)) {
-        if (
-          refreshed.failure instanceof OAuthInvalidGrantError ||
-          refreshed.failure instanceof ProviderIdentityChangedError
-        ) {
-          this.#state.storage.sql.exec(
-            `UPDATE subscription_accounts
-                SET requires_reauth = 1
-              WHERE account_id = ? AND credential_generation = ?`,
-            accountId,
-            source.credential_generation
-          )
-        }
+  #isInternalRequest(request: Request) {
+    const environment = this.#environment
+    return Effect.gen(function* () {
+      const actual = request.headers.get("x-ai-router-internal-token")
+      if (actual === null) {
         return false
       }
-      const cipher = await this.#cipher
-      const envelope = await Effect.runPromise(
-        cipher.encrypt(
+      const config = yield* Effect.promise(() => environment)
+      const result = yield* Effect.result(secureCompare(actual, Redacted.value(config.adminToken)))
+      return Result.isSuccess(result) && result.success
+    })
+  }
+
+  #seed(request: Request) {
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, SeedPayload)
+      const repository = yield* RouterStateRepository
+      const now = yield* Clock.currentTimeMillis
+      const accounts = input.accounts.map((account): SeedAccountRecord => ({
+        ...account,
+        usageJson: JSON.stringify(account.usage)
+      }))
+      const inserted = yield* repository.insertSeedAccounts(accounts, now)
+      return json({ inserted })
+    })
+  }
+
+  #credentialFromRow(row: RouterAccountRow) {
+    const cipherPromise = this.#cipher
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      const cipher = yield* Effect.promise(() => cipherPromise)
+      const accountId = AccountId.make(row.account_id)
+      const decrypted = yield* cipher.decryptForUse(
+        accountId,
+        row.credential_generation,
+        envelopeFromRow(row)
+      )
+      if (decrypted.migration !== undefined) {
+        const now = yield* Clock.currentTimeMillis
+        yield* repository.updateEnvelope(
+          accountId,
+          row.credential_generation,
+          decrypted.migration.keyVersion,
+          decrypted.migration.nonce,
+          decrypted.migration.ciphertext,
+          now
+        )
+      }
+      const credential = yield* decodeCredentialBundle(
+        accountId,
+        row.credential_generation,
+        decrypted.plaintext
+      )
+      return {
+        credential,
+        envelope: decrypted.migration ?? envelopeFromRow(row)
+      }
+    })
+  }
+
+  #ensureCredential(source: RouterAccountRow, now: number) {
+    const credentialFromRow = this.#credentialFromRow.bind(this)
+    const environment = this.#environment
+    const cipherPromise = this.#cipher
+    return Effect.gen(function* () {
+      if (
+        source.enabled !== 1 ||
+        source.requires_reauth === 1 ||
+        source.expires_at > now + 5 * 60_000
+      ) {
+        return source.enabled === 1 && source.requires_reauth === 0
+      }
+      const repository = yield* RouterStateRepository
+      const accountId = AccountId.make(source.account_id)
+      const claimed = yield* repository.claim(
+        accountId,
+        "credential",
+        source.credential_generation,
+        now
+      )
+      if (Option.isNone(claimed)) {
+        return false
+      }
+      const claim = claimed.value
+      return yield* Effect.gen(function* () {
+        const { credential } = yield* credentialFromRow(source)
+        const [config, client] = yield* Effect.all([
+          Effect.promise(() => environment),
+          HttpClient.HttpClient
+        ])
+        const oauth = makeOpenAiOAuthClient({
+          transport: makeCloudflareCodexControlTransport(config, client)
+        })
+        const refreshed = yield* Effect.result(oauth.refresh(credential))
+        if (Result.isFailure(refreshed)) {
+          if (
+            refreshed.failure instanceof OAuthInvalidGrantError ||
+            refreshed.failure instanceof ProviderIdentityChangedError
+          ) {
+            yield* repository.markRequiresReauthentication(accountId, source.credential_generation)
+          }
+          return false
+        }
+        const cipher = yield* Effect.promise(() => cipherPromise)
+        const envelope = yield* cipher.encrypt(
           accountId,
           refreshed.success.generation,
           encodeCredentialBundle(refreshed.success)
         )
-      )
-      return this.#state.storage.transactionSync(() => {
-        const updated = this.#state.storage.sql
-          .exec(
-            `UPDATE subscription_accounts
-                SET credential_generation = ?, expires_at = ?, requires_reauth = 0,
-                    key_version = ?, nonce = ?, ciphertext = ?, updated_at = ?
-              WHERE account_id = ? AND credential_generation = ?
-                AND EXISTS(
-                  SELECT 1 FROM refresh_claims
-                   WHERE token = ? AND credential_generation = ?
-                )
-              RETURNING account_id`,
-            refreshed.success.generation,
-            refreshed.success.expiresAt,
-            envelope.keyVersion,
-            envelope.nonce,
-            envelope.ciphertext,
-            now,
-            accountId,
-            source.credential_generation,
-            claim,
-            source.credential_generation
-          )
-          .toArray().length
-        this.#state.storage.sql.exec(
-          "DELETE FROM subscription_usage WHERE account_id = ?",
-          accountId
-        )
-        this.#releaseClaim(claim)
-        return updated === 1
-      })
-    } finally {
-      this.#releaseClaim(claim)
-    }
+        return yield* repository.commitRefreshedCredential({
+          accountId,
+          ciphertext: envelope.ciphertext,
+          expectedGeneration: source.credential_generation,
+          expiresAt: refreshed.success.expiresAt,
+          keyVersion: envelope.keyVersion,
+          newGeneration: refreshed.success.generation,
+          nonce: envelope.nonce,
+          now,
+          token: claim
+        })
+      }).pipe(Effect.ensuring(repository.releaseClaim(claim).pipe(Effect.ignore)))
+    })
   }
 
-  async #ensureUsage(source: AccountRow, now: number): Promise<boolean> {
-    const accountId = AccountId.make(source.account_id)
-    const existing = usageRows(this.#state.storage.sql).get(accountId)
-    if (
-      existing !== undefined &&
-      existing.credential_generation === source.credential_generation &&
-      now - existing.observed_at < 60_000
-    ) {
-      return true
-    }
-    const claim = this.#claim(accountId, "usage", source.credential_generation, now)
-    if (claim === undefined) {
-      return (
+  #ensureUsage(source: RouterAccountRow, now: number) {
+    const credentialFromRow = this.#credentialFromRow.bind(this)
+    const environment = this.#environment
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      const accountId = AccountId.make(source.account_id)
+      const usageRows = yield* repository.usageRows
+      const existing = usageRows.get(accountId)
+      if (
         existing !== undefined &&
         existing.credential_generation === source.credential_generation &&
-        now - existing.observed_at <= 24 * 60 * 60_000
-      )
-    }
-    try {
-      const { credential } = await this.#credentialFromRow(source)
-      const config = await this.#environment
-      const probe = makeCodexUsageProbe({
-        transport: makeCloudflareCodexControlTransport(config)
-      })
-      const result = await Effect.runPromise(Effect.result(probe.getUsage(credential)))
-      if (Result.isFailure(result)) {
-        if (result.failure instanceof UsageAuthenticationError) {
-          this.#state.storage.sql.exec(
-            `UPDATE subscription_accounts
-                SET requires_reauth = 1
-              WHERE account_id = ? AND credential_generation = ?`,
-            accountId,
-            source.credential_generation
-          )
-        }
+        now - existing.observed_at < 60_000
+      ) {
+        return true
+      }
+      const claimed = yield* repository.claim(accountId, "usage", source.credential_generation, now)
+      if (Option.isNone(claimed)) {
         return (
           existing !== undefined &&
           existing.credential_generation === source.credential_generation &&
           now - existing.observed_at <= 24 * 60 * 60_000
         )
       }
-      return this.#state.storage.transactionSync(() => {
-        const current = accountRow(this.#state.storage.sql, accountId)
-        const claimStillHeld =
-          decodeRows(
-            Schema.Struct({ token: Schema.String }),
-            this.#state.storage.sql
-              .exec(
-                "SELECT token FROM refresh_claims WHERE token = ? AND credential_generation = ?",
-                claim,
-                source.credential_generation
-              )
-              .toArray()
-          )[0]?.token === claim
-        if (current?.credential_generation !== source.credential_generation || !claimStillHeld) {
-          return false
+      const claim = claimed.value
+      return yield* Effect.gen(function* () {
+        const { credential } = yield* credentialFromRow(source)
+        const [config, client] = yield* Effect.all([
+          Effect.promise(() => environment),
+          HttpClient.HttpClient
+        ])
+        const probe = makeCodexUsageProbe({
+          transport: makeCloudflareCodexControlTransport(config, client)
+        })
+        const result = yield* Effect.result(probe.getUsage(credential))
+        if (Result.isFailure(result)) {
+          if (result.failure instanceof UsageAuthenticationError) {
+            yield* repository.markRequiresReauthentication(accountId, source.credential_generation)
+          }
+          return (
+            existing !== undefined &&
+            existing.credential_generation === source.credential_generation &&
+            now - existing.observed_at <= 24 * 60 * 60_000
+          )
         }
-        this.#state.storage.sql.exec(
-          `INSERT INTO subscription_usage(
-             account_id, credential_generation, observed_at, payload_json
-           ) VALUES (?, ?, ?, ?)
-           ON CONFLICT(account_id) DO UPDATE SET
-             credential_generation = excluded.credential_generation,
-             observed_at = excluded.observed_at,
-             payload_json = excluded.payload_json`,
+        return yield* repository.commitUsage({
           accountId,
-          source.credential_generation,
-          result.success.observedAt,
-          JSON.stringify(result.success)
-        )
-        this.#releaseClaim(claim)
-        return true
-      })
-    } finally {
-      this.#releaseClaim(claim)
-    }
+          expectedGeneration: source.credential_generation,
+          observedAt: result.success.observedAt,
+          payloadJson: JSON.stringify(result.success),
+          token: claim
+        })
+      }).pipe(Effect.ensuring(repository.releaseClaim(claim).pipe(Effect.ignore)))
+    })
   }
 
-  async #prepareAll(now: number): Promise<ReadonlyArray<AccountIdType>> {
-    const ready: Array<AccountIdType> = []
-    for (const source of accountRows(this.#state.storage.sql)) {
-      if (!(await this.#ensureCredential(source, now))) {
-        continue
+  #prepareAll(now: number) {
+    const ensureCredential = this.#ensureCredential.bind(this)
+    const ensureUsage = this.#ensureUsage.bind(this)
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      const ready: Array<AccountIdType> = []
+      for (const source of yield* repository.listAccounts) {
+        if (!(yield* ensureCredential(source, now))) {
+          continue
+        }
+        const current = yield* repository.getAccount(AccountId.make(source.account_id))
+        if (
+          Option.isSome(current) &&
+          current.value.enabled === 1 &&
+          current.value.requires_reauth === 0 &&
+          (yield* ensureUsage(current.value, now))
+        ) {
+          ready.push(AccountId.make(source.account_id))
+        }
       }
-      const current = accountRow(this.#state.storage.sql, AccountId.make(source.account_id))
-      if (
-        current !== undefined &&
-        current.enabled === 1 &&
-        current.requires_reauth === 0 &&
-        (await this.#ensureUsage(current, now))
-      ) {
-        ready.push(AccountId.make(source.account_id))
-      }
-    }
-    return ready
+      return ready
+    })
   }
 
-  async #routeAcquire(request: Request): Promise<Response> {
-    const input = await decodeBody(request, RouteAcquirePayload)
-    const ready = new Set(await this.#prepareAll(input.now))
-    const selected = this.#state.storage.transactionSync(() => {
-      const sql = this.#state.storage.sql
-      cleanup(sql, input.now, this.#config)
-      const counts = activeCounts(sql)
-      const health = healthRows(sql)
-      const usage = usageRows(sql)
-      const candidates = accountRows(sql)
-        .filter(
-          (account) =>
-            ready.has(AccountId.make(account.account_id)) &&
-            account.enabled === 1 &&
-            account.requires_reauth === 0
-        )
+  #routeAcquire(request: Request) {
+    const prepareAll = this.#prepareAll.bind(this)
+    const credentialFromRow = this.#credentialFromRow.bind(this)
+    const config = this.#config
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, RouteAcquirePayload)
+      const repository = yield* RouterStateRepository
+      const ready = new Set(yield* prepareAll(input.now))
+      const usage = yield* repository.usageRows
+      const candidates = (yield* repository.listAccounts)
+        .filter((account) => account.enabled === 1 && account.requires_reauth === 0)
         .map((account) => {
           const accountId = AccountId.make(account.account_id)
-          const healthRow = health.get(accountId)
           const snapshot = decodeUsage(usage.get(accountId))
-          const block = blockFromRow(healthRow)
           return Candidate.make({
             accountId,
-            activeReservations: counts.get(accountId) ?? 0,
-            requiresReauthentication:
-              account.requires_reauth === 1 || healthRow?.requires_reauth === 1,
-            ...(snapshot === undefined ? {} : { usage: snapshot }),
-            ...(block === undefined ? {} : { block })
+            activeReservations: 0,
+            requiresReauthentication: false,
+            ...(snapshot === undefined ? {} : { usage: snapshot })
           })
         })
-      const assigned = currentAccount(sql, input.sessionKey)
-      const decision = Effect.runSync(
-        Effect.option(
-          selectAccount({
-            candidates,
-            config: this.#config,
-            now: input.now,
-            ...(assigned === undefined ? {} : { currentAccountId: assigned })
-          })
-        )
-      )
-      if (Option.isNone(decision)) {
-        return undefined
-      }
-      const row = accountRow(sql, decision.value.accountId)
-      if (row === undefined) {
-        return undefined
-      }
-      const leaseToken = LeaseToken.make(crypto.randomUUID())
-      const expiresAt = input.now + this.#config.leaseTtlMs
-      sql.exec(
-        `INSERT INTO reservations(
-           lease_token, account_id, session_key, created_at, expires_at
-         ) VALUES (?, ?, ?, ?, ?)`,
-        leaseToken,
-        row.account_id,
-        input.sessionKey ?? null,
+      const selected = yield* repository.acquire(
+        candidates,
+        ready,
         input.now,
-        expiresAt
+        input.sessionKey,
+        config
       )
-      if (input.sessionKey !== undefined) {
-        sql.exec(
-          `INSERT INTO assignments(session_key, account_id, updated_at)
-           VALUES (?, ?, ?)
-           ON CONFLICT(session_key) DO UPDATE SET
-             account_id = excluded.account_id,
-             updated_at = excluded.updated_at`,
-          input.sessionKey,
-          row.account_id,
-          input.now
-        )
+      if (Option.isNone(selected)) {
+        return json(null)
       }
-      return { expiresAt, leaseToken, row }
-    })
-    if (selected === undefined) {
-      return json(null)
-    }
-    try {
-      const decrypted = await this.#credentialFromRow(selected.row)
+      const decrypted = yield* Effect.result(credentialFromRow(selected.value.row))
+      if (Result.isFailure(decrypted)) {
+        yield* repository.release(selected.value.leaseToken).pipe(Effect.ignore)
+        return json(null)
+      }
       return json({
-        accountId: selected.row.account_id,
+        accountId: selected.value.row.account_id,
         credential: {
-          ciphertext: decrypted.envelope.ciphertext,
-          generation: selected.row.credential_generation,
-          keyVersion: decrypted.envelope.keyVersion,
-          nonce: decrypted.envelope.nonce
+          ciphertext: decrypted.success.envelope.ciphertext,
+          generation: selected.value.row.credential_generation,
+          keyVersion: decrypted.success.envelope.keyVersion,
+          nonce: decrypted.success.envelope.nonce
         },
-        expiresAt: selected.expiresAt,
-        leaseToken: selected.leaseToken
+        expiresAt: selected.value.expiresAt,
+        leaseToken: selected.value.leaseToken
       })
-    } catch {
-      this.#state.storage.sql.exec(
-        "DELETE FROM reservations WHERE lease_token = ?",
-        selected.leaseToken
-      )
-      return json(null)
-    }
-  }
-
-  async #renew(request: Request): Promise<Response> {
-    const input = await decodeBody(request, RenewPayload)
-    return this.#state.storage.transactionSync(() => {
-      cleanup(this.#state.storage.sql, input.now, this.#config)
-      const rows = this.#state.storage.sql
-        .exec(
-          `UPDATE reservations
-              SET expires_at = ?
-            WHERE lease_token = ? AND expires_at > ?
-            RETURNING lease_token`,
-          input.now + this.#config.leaseTtlMs,
-          input.leaseToken,
-          input.now
-        )
-        .toArray()
-      return json({ renewed: rows.length === 1 })
     })
   }
 
-  async #release(request: Request): Promise<Response> {
-    const input = await decodeBody(request, ReleasePayload)
-    this.#state.storage.sql.exec("DELETE FROM reservations WHERE lease_token = ?", input.leaseToken)
-    return json({ ok: true })
-  }
-
-  async #recordResponse(request: Request): Promise<Response> {
-    const input = await decodeBody(request, RecordResponsePayload)
-    this.#state.storage.transactionSync(() => {
-      const sql = this.#state.storage.sql
-      if (input.kind === "success") {
-        sql.exec("DELETE FROM blocks WHERE account_id = ?", input.accountId)
-      } else if (input.kind === "reauth") {
-        sql.exec(
-          `UPDATE subscription_accounts
-              SET requires_reauth = 1
-            WHERE account_id = ? AND credential_generation = ?`,
-          input.accountId,
-          input.generation
-        )
-      } else if (input.kind === "quota" || input.kind === "transient") {
-        const retryAt = input.retryAt ?? (input.kind === "transient" ? input.now + 30_000 : null)
-        sql.exec(
-          `INSERT INTO blocks(account_id, block_kind, retry_at, requires_reauth)
-           VALUES (?, ?, ?, 0)
-           ON CONFLICT(account_id) DO UPDATE SET
-             block_kind = excluded.block_kind,
-             retry_at = excluded.retry_at`,
-          input.accountId,
-          input.kind,
-          retryAt
-        )
-      }
+  #renew(request: Request) {
+    const config = this.#config
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, RenewPayload)
+      const repository = yield* RouterStateRepository
+      const renewed = yield* repository.renew(input.leaseToken, input.now, config)
+      return json({ renewed })
     })
-    return json({ ok: true })
   }
 
-  async #summary(request: Request): Promise<Response> {
-    const input = await decodeBody(request, SummaryPayload)
-    return this.#state.storage.transactionSync(() => {
-      const sql = this.#state.storage.sql
-      cleanup(sql, input.now, this.#config)
-      const counts = activeCounts(sql)
-      const health = healthRows(sql)
-      const accounts = accountRows(sql)
-      const assignments =
-        decodeRows(
-          Schema.Struct({ count: Schema.Number }),
-          sql.exec("SELECT COUNT(*) AS count FROM assignments").toArray()
-        )[0]?.count ?? 0
-      const reservations =
-        decodeRows(
-          Schema.Struct({ count: Schema.Number }),
-          sql.exec("SELECT COUNT(*) AS count FROM reservations").toArray()
-        )[0]?.count ?? 0
+  #release(request: Request) {
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, ReleasePayload)
+      const repository = yield* RouterStateRepository
+      yield* repository.release(input.leaseToken)
+      return json({ ok: true })
+    })
+  }
+
+  #recordResponse(request: Request) {
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, RecordResponsePayload)
+      const repository = yield* RouterStateRepository
+      yield* repository.recordResponse({
+        accountId: input.accountId,
+        generation: input.generation,
+        kind:
+          input.kind === "success" ||
+          input.kind === "reauth" ||
+          input.kind === "quota" ||
+          input.kind === "transient"
+            ? input.kind
+            : "other",
+        now: input.now,
+        retryAt: input.retryAt
+      })
+      return json({ ok: true })
+    })
+  }
+
+  #summary(request: Request) {
+    const config = this.#config
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, SummaryPayload)
+      const repository = yield* RouterStateRepository
+      const summary = yield* repository.summary(input.now, config)
       return json({
-        accounts: accounts.map((account) => {
+        accounts: summary.accounts.map((account) => {
           const accountId = AccountId.make(account.account_id)
-          const row = health.get(accountId)
+          const health = summary.health.get(accountId)
           return {
             accountId,
-            activeReservations: counts.get(accountId) ?? 0,
-            blockKind: row?.block_kind ?? null,
-            requiresReauthentication: account.requires_reauth === 1 || row?.requires_reauth === 1
+            activeReservations: summary.activeCounts.get(accountId) ?? 0,
+            blockKind: health?.block_kind ?? null,
+            requiresReauthentication: account.requires_reauth === 1 || health?.requires_reauth === 1
           }
         }),
-        activeReservations: reservations,
-        assignments
+        activeReservations: summary.reservations,
+        assignments: summary.assignments
       })
     })
   }
 
-  async #maintenance(request: Request): Promise<Response> {
-    const input = await decodeBody(request, SummaryPayload)
-    const visited = accountRows(this.#state.storage.sql).length
-    const ready = await this.#prepareAll(input.now)
-    return json({ ready: ready.length, visited })
-  }
-
-  #adminList(): Response {
-    const usage = usageRows(this.#state.storage.sql)
-    return json({
-      accounts: accountRows(this.#state.storage.sql).map((account) => ({
-        accountId: account.account_id,
-        enabled: account.enabled === 1,
-        expiresAt: account.expires_at,
-        generation: account.credential_generation,
-        requiresReauthentication: account.requires_reauth === 1,
-        ...(usage.get(AccountId.make(account.account_id)) === undefined
-          ? {}
-          : {
-              usageObservedAt: usage.get(AccountId.make(account.account_id))?.observed_at
-            })
-      }))
+  #maintenance(request: Request) {
+    const prepareAll = this.#prepareAll.bind(this)
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, SummaryPayload)
+      const repository = yield* RouterStateRepository
+      const visited = (yield* repository.listAccounts).length
+      const ready = yield* prepareAll(input.now)
+      return json({ ready: ready.length, visited })
     })
   }
 
-  async #adminPutCredential(request: Request): Promise<Response> {
-    const input = await decodeBody(request, AdminCredentialPayload)
-    const accountId = AccountId.make(input.accountId)
-    const existing = accountRow(this.#state.storage.sql, accountId)
-    if (existing !== undefined) {
-      const current = await this.#credentialFromRow(existing)
-      if (Redacted.value(current.credential.providerAccountId) !== input.providerAccountId) {
-        return json({ error: "provider_identity_conflict" }, { status: 409 })
-      }
-    }
-    const generation = (existing?.credential_generation ?? 0) + 1
-    const credential = SubscriptionCredential.make({
-      accessToken: Redacted.make(input.accessToken),
-      accountId,
-      expiresAt: input.expiresAt,
-      generation,
-      providerAccountId: Redacted.make(input.providerAccountId),
-      refreshToken: Redacted.make(input.refreshToken)
+  #adminList() {
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      const [accounts, usage] = yield* Effect.all([repository.listAccounts, repository.usageRows])
+      return json({
+        accounts: accounts.map((account) =>
+          accountSummary(account, usage.get(AccountId.make(account.account_id)))
+        )
+      })
     })
-    const cipher = await this.#cipher
-    const envelope = await Effect.runPromise(
-      cipher.encrypt(accountId, generation, encodeCredentialBundle(credential))
-    )
-    const written = this.#state.storage.transactionSync(() => {
-      const current = accountRow(this.#state.storage.sql, accountId)
-      if (
-        existing !== undefined &&
-        current?.credential_generation !== existing.credential_generation
-      ) {
-        return false
+  }
+
+  #adminPutCredential(request: Request) {
+    const credentialFromRow = this.#credentialFromRow.bind(this)
+    const cipherPromise = this.#cipher
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, AdminCredentialPayload)
+      const repository = yield* RouterStateRepository
+      const accountId = AccountId.make(input.accountId)
+      const existing = yield* repository.getAccount(accountId)
+      if (Option.isSome(existing)) {
+        const current = yield* credentialFromRow(existing.value)
+        if (Redacted.value(current.credential.providerAccountId) !== input.providerAccountId) {
+          return json({ error: "provider_identity_conflict" }, { status: 409 })
+        }
       }
-      this.#state.storage.sql.exec(
-        `INSERT INTO subscription_accounts(
-           account_id, enabled, credential_generation, expires_at, requires_reauth,
-           key_version, nonce, ciphertext, updated_at
-         ) VALUES (?, 1, ?, ?, 0, ?, ?, ?, ?)
-         ON CONFLICT(account_id) DO UPDATE SET
-           credential_generation = excluded.credential_generation,
-           expires_at = excluded.expires_at,
-           requires_reauth = 0,
-           key_version = excluded.key_version,
-           nonce = excluded.nonce,
-           ciphertext = excluded.ciphertext,
-           updated_at = excluded.updated_at`,
+      const generation = (Option.isSome(existing) ? existing.value.credential_generation : 0) + 1
+      const credential = SubscriptionCredential.make({
+        accessToken: Redacted.make(input.accessToken),
+        accountId,
+        expiresAt: input.expiresAt,
+        generation,
+        providerAccountId: Redacted.make(input.providerAccountId),
+        refreshToken: Redacted.make(input.refreshToken)
+      })
+      const cipher = yield* Effect.promise(() => cipherPromise)
+      const envelope = yield* cipher.encrypt(
         accountId,
         generation,
-        credential.expiresAt,
-        envelope.keyVersion,
-        envelope.nonce,
-        envelope.ciphertext,
-        Date.now()
+        encodeCredentialBundle(credential)
       )
-      this.#state.storage.sql.exec("DELETE FROM subscription_usage WHERE account_id = ?", accountId)
-      this.#state.storage.sql.exec("DELETE FROM refresh_claims WHERE account_id = ?", accountId)
-      this.#state.storage.sql.exec("DELETE FROM blocks WHERE account_id = ?", accountId)
-      return true
+      const now = yield* Clock.currentTimeMillis
+      const written = yield* repository.writeAdminCredential({
+        accountId,
+        ciphertext: envelope.ciphertext,
+        ...(Option.isNone(existing)
+          ? {}
+          : { expectedGeneration: existing.value.credential_generation }),
+        expiresAt: credential.expiresAt,
+        generation,
+        keyVersion: envelope.keyVersion,
+        nonce: envelope.nonce,
+        now
+      })
+      return written
+        ? json({
+            accountId,
+            enabled: true,
+            expiresAt: credential.expiresAt,
+            generation,
+            requiresReauthentication: false
+          })
+        : json({ error: "account_changed" }, { status: 409 })
     })
-    return written
-      ? json({
-          accountId,
-          enabled: true,
-          expiresAt: credential.expiresAt,
-          generation,
-          requiresReauthentication: false
-        })
-      : json({ error: "account_changed" }, { status: 409 })
   }
 
-  async #adminEnabled(request: Request): Promise<Response> {
-    const input = await decodeBody(request, AdminEnabledPayload)
-    const rows = this.#state.storage.sql
-      .exec(
-        `UPDATE subscription_accounts
-            SET enabled = ?, updated_at = ?
-          WHERE account_id = ?
-          RETURNING account_id`,
-        input.enabled ? 1 : 0,
-        input.now,
-        input.accountId
-      )
-      .toArray()
-    if (rows.length === 0) {
-      return json({ error: "account_not_found" }, { status: 404 })
-    }
-    return this.#adminListFor(AccountId.make(input.accountId))
-  }
-
-  async #adminRemove(request: Request): Promise<Response> {
-    const input = await decodeBody(request, AdminAccountPayload)
-    const removed = this.#state.storage.transactionSync(() => {
-      const exists =
-        accountRow(this.#state.storage.sql, AccountId.make(input.accountId)) !== undefined
-      for (const table of [
-        "subscription_usage",
-        "refresh_claims",
-        "assignments",
-        "reservations",
-        "blocks",
-        "subscription_accounts"
-      ]) {
-        this.#state.storage.sql.exec(`DELETE FROM ${table} WHERE account_id = ?`, input.accountId)
+  #adminEnabled(request: Request) {
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, AdminEnabledPayload)
+      const repository = yield* RouterStateRepository
+      const accountId = AccountId.make(input.accountId)
+      if (!(yield* repository.setEnabled(accountId, input.enabled, input.now))) {
+        return json({ error: "account_not_found" }, { status: 404 })
       }
-      return exists
-    })
-    return removed
-      ? new Response(null, { status: 204 })
-      : json({ error: "account_not_found" }, { status: 404 })
-  }
-
-  #adminListFor(accountId: AccountIdType): Response {
-    const row = accountRow(this.#state.storage.sql, accountId)
-    if (row === undefined) {
-      return json({ error: "account_not_found" }, { status: 404 })
-    }
-    const usage = usageRows(this.#state.storage.sql).get(accountId)
-    return json({
-      accountId,
-      enabled: row.enabled === 1,
-      expiresAt: row.expires_at,
-      generation: row.credential_generation,
-      requiresReauthentication: row.requires_reauth === 1,
-      ...(usage === undefined ? {} : { usageObservedAt: usage.observed_at })
+      const row = yield* repository.getAccount(accountId)
+      if (Option.isNone(row)) {
+        return json({ error: "account_not_found" }, { status: 404 })
+      }
+      const usage = yield* repository.usageRows
+      return json(accountSummary(row.value, usage.get(accountId)))
     })
   }
 
-  #keyVersions(): Response {
-    const versions = decodeRows(
-      Schema.Struct({
-        count: Schema.Number,
-        keyVersion: Schema.String
-      }),
-      this.#state.storage.sql
-        .exec(
-          `SELECT key_version AS keyVersion, COUNT(*) AS count
-             FROM subscription_accounts
-            GROUP BY key_version
-            ORDER BY key_version`
-        )
-        .toArray()
-    )
-    return json({ versions })
+  #adminRemove(request: Request) {
+    return Effect.gen(function* () {
+      const input = yield* decodeBody(request, AdminAccountPayload)
+      const repository = yield* RouterStateRepository
+      const removed = yield* repository.removeAccount(AccountId.make(input.accountId))
+      return removed
+        ? new Response(null, { status: 204 })
+        : json({ error: "account_not_found" }, { status: 404 })
+    })
+  }
+
+  #keyVersions() {
+    return Effect.gen(function* () {
+      const repository = yield* RouterStateRepository
+      return json({ versions: yield* repository.keyVersions })
+    })
   }
 }

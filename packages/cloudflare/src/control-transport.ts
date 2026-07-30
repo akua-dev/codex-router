@@ -1,10 +1,11 @@
 import {
   CodexControlTransport,
   CodexControlTransportError,
+  makeHttpClientCodexControlTransport,
   type CodexControlTransportShape
 } from "@akua-dev/codex-router-codex"
 import { Effect, Redacted } from "effect"
-import { HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
+import { HttpClient } from "effect/unstable/http"
 import type { WorkerRuntimeConfig } from "./config.ts"
 
 const failure = () =>
@@ -24,17 +25,14 @@ const gatewayUrl = (request: Request, config: WorkerRuntimeConfig): URL => {
 
 export const makeCloudflareCodexControlTransport = (
   config: WorkerRuntimeConfig,
-  fetchImplementation: (request: Request) => Promise<Response> = fetch
-): CodexControlTransportShape =>
-  CodexControlTransport.of({
+  client: HttpClient.HttpClient
+): CodexControlTransportShape => {
+  const transport = makeHttpClientCodexControlTransport(client)
+  return CodexControlTransport.of({
     execute: Effect.fn("CloudflareCodexControlTransport.execute")(function* (request) {
       const source = new URL(request.url)
       if (source.hostname === "auth.openai.com") {
-        const response = yield* Effect.tryPromise({
-          try: () => fetchImplementation(request),
-          catch: failure
-        })
-        return HttpClientResponse.fromWeb(HttpClientRequest.fromWeb(request), response)
+        return yield* transport.execute(request).pipe(Effect.mapError(failure))
       }
       if (source.hostname !== "chatgpt.com") {
         return yield* failure()
@@ -54,10 +52,7 @@ export const makeCloudflareCodexControlTransport = (
         method: request.method,
         signal: request.signal
       })
-      const response = yield* Effect.tryPromise({
-        try: () => fetchImplementation(forwarded),
-        catch: failure
-      })
-      return HttpClientResponse.fromWeb(HttpClientRequest.fromWeb(forwarded), response)
+      return yield* transport.execute(forwarded).pipe(Effect.mapError(failure))
     })
   })
+}

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Redacted } from "effect"
+import { HttpClient, type HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { makeCloudflareCodexControlTransport, type WorkerRuntimeConfig } from "../src/index.ts"
 
 const config = {
@@ -24,11 +25,12 @@ const config = {
 describe("Cloudflare Codex control transport", () => {
   it.effect("keeps OAuth direct and sends usage through the privacy-locked custom provider", () =>
     Effect.gen(function* () {
-      const requests: Array<Request> = []
-      const transport = makeCloudflareCodexControlTransport(config, (request) => {
+      const requests: Array<HttpClientRequest.HttpClientRequest> = []
+      const client = HttpClient.make((request) => {
         requests.push(request)
-        return Promise.resolve(Response.json({ ok: true }))
+        return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json({ ok: true })))
       })
+      const transport = makeCloudflareCodexControlTransport(config, client)
 
       yield* transport.execute(
         new Request("https://auth.openai.com/oauth/token", {
@@ -46,16 +48,16 @@ describe("Cloudflare Codex control transport", () => {
       )
 
       expect(requests[0]?.url).toBe("https://auth.openai.com/oauth/token")
-      expect(requests[0]?.headers.has("cf-aig-authorization")).toBe(false)
+      expect(requests[0]?.headers["cf-aig-authorization"]).toBeUndefined()
       expect(requests[1]?.url).toBe(
         "https://gateway.ai.cloudflare.com/v1/cf-account/router/custom-codex-subscription/backend-api/wham/usage"
       )
-      expect(requests[1]?.headers.get("cf-aig-authorization")).toBe("Bearer aig-token")
-      expect(requests[1]?.headers.get("cf-aig-collect-log-payload")).toBe("false")
-      expect(requests[1]?.headers.get("cf-aig-skip-cache")).toBe("true")
-      expect(requests[1]?.headers.get("cf-aig-max-attempts")).toBe("1")
-      expect(requests[1]?.headers.get("x-api-key")).toBe("relay-token")
-      expect(requests[1]?.headers.get("cf-aig-metadata")).not.toContain("provider-account")
+      expect(requests[1]?.headers["cf-aig-authorization"]).toBe("Bearer aig-token")
+      expect(requests[1]?.headers["cf-aig-collect-log-payload"]).toBe("false")
+      expect(requests[1]?.headers["cf-aig-skip-cache"]).toBe("true")
+      expect(requests[1]?.headers["cf-aig-max-attempts"]).toBe("1")
+      expect(requests[1]?.headers["x-api-key"]).toBe("relay-token")
+      expect(requests[1]?.headers["cf-aig-metadata"]).not.toContain("provider-account")
     })
   )
 })
