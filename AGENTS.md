@@ -1,8 +1,7 @@
 # codex-router agent instructions
 
 This file is the authoritative project brief and engineering contract. Read it before changing code,
-configuration, tests, operations, or documentation. `AGENT.md` exists only to point tools that use
-the singular filename here.
+configuration, tests, operations, or documentation.
 
 ## Mission
 
