@@ -25,6 +25,9 @@ Implemented and tested:
 - authenticated account list/login/enable/disable/remove administration;
 - scheduled maintenance every minute on Workers and with an Effect schedule on Bun;
 - one-send opaque HTTP/SSE forwarding;
+- portable Effect `HttpRouter` ingress with raw Web response preservation;
+- official Effect Bun HTTP hosting/runtime/platform services and Effect Stream relay fixtures;
+- official Effect SQLite clients and migrations for Bun and Durable Object state;
 - Cloudflare AI Gateway metadata logging with payloads, cache, and retries disabled;
 - a narrowly scoped Bun egress relay behind Cloudflare Tunnel;
 - byte-exact deployed synthetic SSE and minimal real Codex subscription canaries.
@@ -208,9 +211,11 @@ Tunnel sidecar.
 
 - `@akua-dev/codex-router-core` — quota policy, state models, selection, classifications;
 - `@akua-dev/codex-router-codex` — OAuth, usage, account lifecycle, protocol, opaque handler;
-- `@akua-dev/codex-router-bun` — native SQLite, scheduled maintenance, Bun server/admin client;
-- `@akua-dev/codex-router-cloudflare` — Durable Object, vault, Worker, AI Gateway adapters;
-- `@akua-dev/codex-router-relay` — authenticated fixed-route Bun egress relay;
+- `@akua-dev/codex-router-bun` — Effect SQLite, scheduled maintenance, official Bun HTTP
+  server/admin client;
+- `@akua-dev/codex-router-cloudflare` — Effect Durable Object SQLite/migrations, vault, Worker, AI
+  Gateway adapters;
+- `@akua-dev/codex-router-relay` — authenticated fixed-route Effect HTTP/Bun egress relay;
 - `apps/server`, `apps/worker`, `apps/relay` — runtime composition roots.
 
 The official Effect agent skill is vendored at `.agents/skills/effect-ts`; the matching source

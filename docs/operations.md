@@ -126,8 +126,9 @@ For Kubernetes:
 - allow graceful shutdown;
 - source secrets through a Secret or external-secret controller.
 
-The Effect maintenance fiber starts with the application scope and repeats every minute. It stops
-when the ManagedRuntime closes.
+`BunRuntime.runMain` launches the `BunHttpServer`/`HttpRouter` layer and installs signal-aware
+shutdown. Effect filesystem/path services create the database directory, and the scoped maintenance
+fiber repeats every minute until the launched layer is interrupted.
 
 ## Cloudflare deployment
 
@@ -188,8 +189,11 @@ bun run check
 bun run deploy:worker
 ```
 
-The checked-in migration creates the SQLite-backed `RouterStateObject`. Treat its class name,
-namespace, and migration history as persistent storage identifiers.
+The checked-in Cloudflare migration creates the SQLite-backed `RouterStateObject`. Inside it, the
+official Effect SQL migrator applies ordered, non-destructive migrations and records them in
+`effect_sql_migrations`. Treat the Durable Object class name, namespace, migration IDs/names, and
+logical table names as persistent storage identifiers. Never renumber an applied migration or reuse
+an ID for different SQL.
 
 The cron trigger runs every minute. A scheduled event creates a request-scoped application, runs
 portable maintenance, then disposes the runtime.

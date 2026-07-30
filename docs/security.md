@@ -52,8 +52,8 @@ Durable Object, routing SQLite tables, application logs, and Git repository must
 - Model callers use `x-ai-router-token` or bearer authorization.
 - Admin callers use only `x-ai-router-admin-token`.
 - Client/admin/relay tokens must be pairwise distinct.
-- Bun compares equal-length values with `timingSafeEqual`.
-- Workers and the relay compare SHA-256 digests with constant-time accumulation.
+- Bun, Workers, and the relay compare fixed-length SHA-256 digests through Effect `Crypto`, using
+  constant-time accumulation after hashing.
 - Authentication happens before model request-body access.
 - Method and route validation happens before account acquisition.
 - Explicit session values must be non-empty and at most 256 characters.

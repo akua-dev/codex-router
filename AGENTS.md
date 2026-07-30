@@ -91,9 +91,10 @@ change. It comes from `Effect-TS/skills` source commit `a8b6bb40d1d4d550b49c0ff7
 The matching Effect source checkout is pinned at `.repos/effect` commit
 `acee26944bc89ee554d7b9fadab7443f9edc28a9`.
 
-The repository currently pins `effect`, `@effect/vitest`, `@effect/platform-bun`, and
-`@effect/sql-sqlite-bun` to exactly `4.0.0-beta.102`. Before dependency changes, verify the latest
-mutually aligned official versions and update every Effect package together.
+The repository currently pins `effect`, `@effect/vitest`, `@effect/platform-bun`,
+`@effect/platform-browser`, `@effect/sql-sqlite-bun`, and `@effect/sql-sqlite-do` to exactly
+`4.0.0-beta.102`. Before dependency changes, verify the latest mutually aligned official versions
+and update every Effect package together.
 
 Use Effect throughout application behavior:
 
@@ -101,6 +102,16 @@ Use Effect throughout application behavior:
 - use stable `Effect.fn("Name")` functions;
 - use `Context.Service` ports and named Layers;
 - use `ManagedRuntime` only at composition/runtime boundaries;
+- build portable ingress with `HttpRouter`, `HttpEffect.toWebHandler`, and `HttpServerResponse.raw`
+  for exact Web response preservation;
+- host Bun processes with `BunHttpServer.layer`, `HttpRouter.serve`, `Layer.launch`, and
+  `BunRuntime.runMain`;
+- use `BunServices` for filesystem/path/process capabilities, `BunHttpClient` for decoded control
+  traffic, `BunCrypto` in Bun, and `BrowserCrypto` in Workers;
+- use `@effect/sql-sqlite-bun` for Bun SQLite and `@effect/sql-sqlite-do` plus its official migrator
+  for Durable Object SQLite;
+- use `Encoding`, `Crypto`, `Clock`, `Stream`, and `Schedule` instead of local helpers wherever
+  their semantics apply;
 - use scoped fibers and Effect `Schedule` for Bun background maintenance;
 - decode every external value with `Schema`, including env, JSON, SQL, JWT claims, OAuth responses,
   usage responses, Durable Object RPC, and encrypted envelopes;
@@ -223,7 +234,8 @@ reauthentication. On transient refresh/usage failures, retain valid stale usage 
 limit.
 
 Cloudflare uses one SQLite Durable Object named `global`. It owns account/routing state and
-encrypted credentials but never receives model bodies or holds model streams.
+encrypted credentials through the official Effect Durable Object SQLite client, repository, and
+ordered `effect_sql_migrations`, but never receives model bodies or holds model streams.
 
 Bun uses native SQLite and `BEGIN IMMEDIATE`. One normal SQLite PVC means one writer replica.
 Multi-replica Bun requires a different state adapter with equivalent atomicity.

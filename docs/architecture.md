@@ -57,8 +57,14 @@ usage, refresh, leases, or assignments.
 | `UpstreamTransport`        | Perform the one allowed model transmission                              |
 | `GatewayTelemetry`         | Emit bounded payload-free decision/bookkeeping events                   |
 
-External inputs are Schema-decoded. Expected failures are typed. Composition roots build Layers and
-ManagedRuntimes at runtime boundaries.
+External inputs are Schema-decoded. Expected failures are typed. Portable ingress is registered with
+`HttpRouter`; the Web bridge returns `HttpServerResponse.raw` for the opaque response rather than
+converting its body into an Effect stream. Composition roots build named Layers and ManagedRuntimes
+only at runtime boundaries.
+
+Decoded OAuth, usage, and administration traffic uses Effect `HttpClient`. The model hop remains
+native Web `fetch` by design because its original `Request`, `Response`, and `ReadableStream` are
+the protocol-fidelity boundary.
 
 ## Cloudflare production path
 
@@ -88,6 +94,10 @@ The Worker constructs a request-scoped ManagedRuntime. This is intentional: a Du
 comes from the current request environment and must not leak through a global runtime. The runtime
 stays alive until a streamed response ends, errors, or is cancelled, then disposes exactly once.
 
+The Worker uses the generic Effect Web/`HttpRouter` bridge plus `BrowserCrypto`; there is no
+separate official Cloudflare runtime package in the pinned Effect source. Cloudflare-specific
+support comes from Web-standard Effect modules and `@effect/sql-sqlite-do`.
+
 The Durable Object is named `global`. It never receives model request or response bodies and never
 holds an upstream stream open.
 
@@ -105,7 +115,7 @@ The relay:
 - requires subscription authorization and provider-account headers for real upstream requests;
 - strips Cloudflare, forwarding, relay-auth, hop-by-hop, compression, cookie, and origin-server
   headers as appropriate;
-- uses fixed upstream URLs and manual redirects;
+- uses fixed upstream URLs and disables automatic redirect following;
 - passes request and response bodies without reading them.
 
 The `x-api-key` is only relay transport authentication. It is not an OpenAI API key and is never
@@ -197,13 +207,24 @@ One SQLite Durable Object owns account state, encrypted credential records, usag
 claims, routing health, leases, and sticky assignments. AES-256-GCM uses a random 96-bit nonce,
 explicit key version, and opaque account ID as additional authenticated data.
 
+The object owns one instance-scoped `ManagedRuntime`. `@effect/sql-sqlite-do` serializes access,
+`SqliteMigrator` records the ordered non-destructive schema in `effect_sql_migrations`, repository
+rows are Schema-decoded, and multi-statement state changes use Effect SQL transactions. Migration
+and bootstrap seeding finish inside `blockConcurrencyWhile`.
+
 Keyrings allow old and current key versions simultaneously. Online rotation rewrites and verifies
 records before an old key is retired.
 
 ### Bun / AgentOS
 
-Native SQLite uses `BEGIN IMMEDIATE` for the same atomic contracts. Bootstrap accounts seed only
-missing records; routine lifecycle uses the admin API and persisted database.
+`@effect/sql-sqlite-bun` uses native SQLite and `BEGIN IMMEDIATE` for the same atomic contracts.
+Bootstrap accounts seed only missing records; routine lifecycle uses the admin API and persisted
+database.
+
+The Bun server and relay are scoped `BunHttpServer` layers served by `HttpRouter`. Composition uses
+`Layer.launch` and `BunRuntime.runMain`, so signal interruption closes HTTP, SQLite, maintenance,
+and other scoped resources. The relay generates only its controlled canary with Effect `Stream` and
+`Clock`; real model bodies remain native Web streams.
 
 One normal SQLite file means one Bun writer replica. Multi-replica AgentOS deployment requires a
 different adapter with equivalent transaction semantics.

@@ -60,21 +60,22 @@ OAuth pooling, Durable Object coordination, and Free-tier CPU still need their o
 
 ## Issues learned online and in deployment
 
-| Issue                                              | Consequence                                                            | Project response                                                      |
-| -------------------------------------------------- | ---------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| Workers Free allows 10 ms CPU/invocation           | Effect/crypto/stream work can exceed Free even when request count fits | collect deployed GraphQL CPU; recommend Paid from current trace       |
-| 100,000 Worker requests/day                        | account-wide traffic can exhaust Free                                  | reconstruct local/AgentOS volume and include cron                     |
-| 100,000 DO requests/day                            | acquire/record/release leaves limited renewal headroom                 | no body through DO; renew at most every 40 seconds                    |
-| Miniflare compressed-response buffering difference | local SSE success does not prove edge streaming                        | exact-byte deployed fixture with first-byte timing                    |
-| partial Node compatibility                         | packages can bundle yet fail at runtime                                | Web APIs in portable/Worker code; no `nodejs_compat` dependency       |
-| custom-provider path prefixing                     | duplicate or missing `/v1` paths return 404                            | relay explicitly accepts tested canonical and `/v1` forms             |
-| direct gateway egress to `chatgpt.com` rejected    | custom provider could not reach subscription backend from edge         | authenticated Tunnel to a fixed-route Bun egress relay                |
-| AI Gateway inserted nonce fields in JSON SSE       | downstream bytes changed despite payload logging off                   | carry body as octet-stream, restore content type at Worker            |
-| gateway retries/cache/payload defaults             | replay or data retention can violate invariants                        | force one attempt, cache skip, payload collection false per call      |
-| 100,000 stored logs                                | dashboard history lasts days at audited volume                         | delete oldest; use payload-free Logpush only if longer history needed |
-| eventually consistent KV                           | unsafe refresh/lease/assignment races                                  | SQLite Durable Object transaction                                     |
-| private subscription response shapes               | null/weekly-only fields can break strict decoders                      | decode known shapes, reject unknown window durations                  |
-| request-scoped Worker bindings                     | global runtime can retain a stale DO stub/environment                  | create and dispose one ManagedRuntime per non-health request          |
+| Issue                                              | Consequence                                                            | Project response                                                       |
+| -------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Workers Free allows 10 ms CPU/invocation           | Effect/crypto/stream work can exceed Free even when request count fits | collect deployed GraphQL CPU; recommend Paid from current trace        |
+| 100,000 Worker requests/day                        | account-wide traffic can exhaust Free                                  | reconstruct local/AgentOS volume and include cron                      |
+| 100,000 DO requests/day                            | acquire/record/release leaves limited renewal headroom                 | no body through DO; renew at most every 40 seconds                     |
+| Miniflare compressed-response buffering difference | local SSE success does not prove edge streaming                        | exact-byte deployed fixture with first-byte timing                     |
+| partial Node compatibility                         | packages can bundle yet fail at runtime                                | Web APIs in portable/Worker code; no `nodejs_compat` dependency        |
+| custom-provider path prefixing                     | duplicate or missing `/v1` paths return 404                            | relay explicitly accepts tested canonical and `/v1` forms              |
+| direct gateway egress to `chatgpt.com` rejected    | custom provider could not reach subscription backend from edge         | authenticated Tunnel to a fixed-route Bun egress relay                 |
+| AI Gateway inserted nonce fields in JSON SSE       | downstream bytes changed despite payload logging off                   | carry body as octet-stream, restore content type at Worker             |
+| gateway retries/cache/payload defaults             | replay or data retention can violate invariants                        | force one attempt, cache skip, payload collection false per call       |
+| 100,000 stored logs                                | dashboard history lasts days at audited volume                         | delete oldest; use payload-free Logpush only if longer history needed  |
+| eventually consistent KV                           | unsafe refresh/lease/assignment races                                  | SQLite Durable Object transaction                                      |
+| private subscription response shapes               | null/weekly-only fields can break strict decoders                      | decode known shapes, reject unknown window durations                   |
+| request-scoped Worker bindings                     | global runtime can retain a stale DO stub/environment                  | create and dispose one ManagedRuntime per non-health request           |
+| no dedicated Effect Cloudflare runtime package     | assuming Node/Bun adapters would undermine edge portability            | generic Effect Web router/bridge, BrowserCrypto, and SQLite-DO adapter |
 
 References:
 
