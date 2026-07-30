@@ -220,6 +220,7 @@ const post = (path: string, body = "{}", headers: HeadersInit = {}) =>
             fetch(
               post(path, '{"compaction_trigger":123}', {
                 authorization: "Bearer caller-secret",
+                baggage: "private=caller-secret",
                 "chatgpt-account-id": "caller-account",
                 "session-id": "session-a",
                 "x-api-key": "caller-api-key"
@@ -241,6 +242,7 @@ const post = (path: string, body = "{}", headers: HeadersInit = {}) =>
           expect(request.url).toBe("https://chatgpt.com/backend-api/codex/responses")
           expect(request.headers.get("authorization")).toBe("Bearer selected-secret")
           expect(request.headers.get("chatgpt-account-id")).toBe("provider-account-a")
+          expect(request.headers.has("baggage")).toBe(false)
           expect(request.headers.has("x-api-key")).toBe(false)
           expect(request.headers.get("session-id")).toBe("session-a")
         }
