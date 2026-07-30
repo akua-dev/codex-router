@@ -1,112 +1,126 @@
 # codex-router agent instructions
 
-This file is the authoritative project brief and engineering contract. Read it before changing code,
-configuration, tests, operations, or documentation.
+This is the authoritative project vision and engineering contract. Read it before changing code,
+configuration, tests, deployment, or documentation.
+
+There must be no singular `AGENT.md`; this `AGENTS.md` is the only repository agent brief.
 
 ## Mission
 
-Build a small, auditable, quota-aware router for Codex Responses traffic. It selects a usable
-account from real short and weekly quota windows, keeps a session on one account while that account
-remains safe, forwards the request exactly once, and preserves the upstream response stream.
+Build a small, auditable load balancer for Codex traffic backed by ChatGPT subscriptions.
 
-The same portable Effect domain must run in:
+The router must:
 
-- Cloudflare Workers, with a SQLite Durable Object for coordination and a provider-specific
-  Cloudflare AI Gateway endpoint for metadata-only request visibility.
-- Bun on a VM or in Kubernetes, with native SQLite on a persistent volume.
-- AgentOS, by reusing `packages/core` and `packages/codex` rather than copying their policies.
+- maintain real short and weekly quota state;
+- refresh OAuth credentials without generation races;
+- keep sessions sticky while an account remains safe;
+- reserve concurrent streams atomically;
+- forward one opaque Responses request exactly once;
+- preserve incremental response bytes;
+- use Cloudflare AI Gateway for metadata-only observability;
+- run the same Effect domain on Cloudflare Workers and Bun/AgentOS.
 
-This is a quota and account-health router, not a semantic model router. It does not inspect prompts
-to decide which model is “best.” Cloudflare AI Gateway is the observability hop, not the source of
-truth for subscription quota or sticky assignment state.
+This is the “codex-lb problem” optimized for Cloudflare Workers and portable Effect services, not a
+port of codex-lb’s Python/UI architecture.
 
-## Product boundary and honesty requirement
+## Product boundary and honesty
 
-OpenAI documents Codex access through ChatGPT plans, but it does not document multi-user ChatGPT
-OAuth pooling as a supported public API product. OpenAI also states that ChatGPT and API billing are
-separate. This project is intentionally a ChatGPT subscription router, not an OpenAI API router.
-Therefore:
+This project is subscription-only:
 
-- ChatGPT subscription routing is experimental and requires an explicit terms, privacy, and
-  organizational-policy review before real use.
-- Never invent or document a “Codex subscription API key.” No such public credential type is
-  documented.
-- Do not add OpenAI API-key accounts, API billing, or API upstream routing.
-- Never claim that Cloudflare AI Gateway can consume a ChatGPT subscription directly. Its official
-  Codex integration uses its OpenAI endpoint and Cloudflare-managed or provider credentials.
-- Never claim production readiness while OAuth acquisition/refresh, live quota refresh, deployed
-  stream canaries, and terms review remain incomplete.
+- Do not add OpenAI API-key accounts, API billing, `/v1` API upstreams, or provider-key fallback.
+- Never invent a “Codex subscription API key.” ChatGPT OAuth access and refresh tokens are the
+  credential model.
+- The relay’s `x-api-key` is only an internal gateway-to-relay transport token. Strip it before
+  `chatgpt.com` and never describe it as a model credential.
+- Cloudflare AI Gateway cannot select accounts by ChatGPT quota and does not directly consume a
+  ChatGPT plan.
+- Dynamic Routing, `/compat`, semantic routing, and gateway spend limits do not replace this
+  project’s quota/credential state.
+- Never claim that technical controls make multi-account ChatGPT OAuth pooling an OpenAI-supported
+  public API. Terms, privacy, ownership, and organization-policy review remain required.
+- Do not describe Free-tier fit from request counts alone. Current deployed CPU evidence does not
+  establish the 10 ms Free limit.
+- HTTP/SSE is supported. Do not advertise WebSocket support without a native deployed protocol
+  canary.
 
-The current repository is a tested foundation. It accepts bootstrap usage snapshots and credential
-material through secret configuration, routes HTTP/SSE Responses traffic, persists routing state,
-and encrypts the Worker credential vault. It does not yet implement the full AgentOS OAuth refresh
-lock and live 60-second quota cache. Those are release blockers, not optional polish.
+The deployed subscription path has passed exact-byte synthetic SSE, live usage, and minimal real
+Codex CLI canaries. Keep [docs/canary.md](docs/canary.md) synchronized with later evidence.
 
-## Repository map and dependency direction
+## Repository and dependency direction
 
 ```text
 packages/core
-  schema-backed domain, deterministic selection, routing-state port,
-  upstream response classification, in-memory test implementation
+  schemas, selection, routing state models and classifications
 
 packages/codex
-  Codex usage decoding, protocol paths, session extraction, header sanitation,
-  service ports, one-shot transparent HTTP/SSE handler
+  OAuth, usage decoding, generation-safe subscription router,
+  account admin, protocol mapping, transparent handler
 
 packages/bun
-  Bun config, native SQLite RoutingState, runtime layers, ManagedRuntime,
-  health/status wrapper and Bun.serve boundary
+  native SQLite account/routing store, Effect maintenance schedule,
+  Bun server and remote admin client
 
 packages/cloudflare
-  Worker config, AES-GCM credential cipher, encrypted DO vault, DO client,
-  SQLite Durable Object, AI Gateway transport, Worker ManagedRuntime
+  SQLite Durable Object, encrypted vault/keyring, Worker entrypoint,
+  AI Gateway/control transports, cron integration
 
-apps/server
-  Bun composition root
+packages/relay
+  authenticated fixed-route Bun egress relay
 
-apps/worker
-  Cloudflare module Worker and Wrangler configuration
+apps/server | apps/worker | apps/relay
+  composition roots
 ```
 
-Dependency flow is one way:
+Dependency flow:
 
 ```text
 core <- codex <- bun app
               <- cloudflare app
+
+relay <- relay app
 ```
 
-`packages/core` and `packages/codex` must not import `bun:*`, `cloudflare:*`, Node built-ins,
-Wrangler, or runtime-specific packages. Runtime APIs belong only in their adapter package or app.
+`packages/core` and `packages/codex` must not import Bun, Node, Cloudflare, Wrangler, filesystem,
+Kubernetes, or relay code. Runtime specifics stay behind ports. AgentOS must import portable
+packages instead of copying policy.
 
 ## Effect engineering contract
 
-Use the vendored official Effect skill at `.agents/skills/effect-ts/SKILL.md` for every Effect
-change. It was copied from `Effect-TS/skills` at source commit
-`a8b6bb40d1d4d550b49c0ff7a624b5e6da500a24`. The Effect source is pinned in `.repos/effect` at
-`acee26944bc89ee554d7b9fadab7443f9edc28a9`; read source there when an API is unclear.
+Use the vendored official Effect agent skill at `.agents/skills/effect-ts/SKILL.md` for every Effect
+change. It comes from `Effect-TS/skills` source commit `a8b6bb40d1d4d550b49c0ff7a624b5e6da500a24`.
+The matching Effect source checkout is pinned at `.repos/effect` commit
+`acee26944bc89ee554d7b9fadab7443f9edc28a9`.
 
-Required rules:
+The repository currently pins `effect`, `@effect/vitest`, `@effect/platform-bun`, and
+`@effect/sql-sqlite-bun` to exactly `4.0.0-beta.102`. Before dependency changes, verify the latest
+mutually aligned official versions and update every Effect package together.
 
-- Stay on the latest mutually aligned Effect beta versions. `effect`, `@effect/vitest`, and
-  `@effect/platform-bun` must use the exact same version.
-- Model application behavior as `Effect<A, E, R>`.
-- Use `Effect.fn("stableName")` for reusable operations and `Effect.gen` for orchestration.
-- Use `Context.Service` for ports and named `Layer` values for implementations.
-- Build layers once with `ManagedRuntime` at Worker and Bun boundaries.
-- Decode every external value with `Schema`, including environment, JSON, SQL rows, RPC payloads,
-  usage responses, and encrypted envelopes.
-- Use `Schema.Class` for persisted or transmitted domain models and `Schema.TaggedErrorClass` for
-  expected errors.
-- Use `Redacted` for credentials and secret bindings.
-- Test Effects with `@effect/vitest`; share test dependencies through layers.
-- Do not use `any`, unchecked casts, non-null assertions, namespaces, raw property probing on
-  `unknown`, or ad hoc thrown exceptions for expected failures.
-- Do not scatter `Effect.provide` through business functions. Provision at composition or test
-  boundaries.
+Use Effect throughout application behavior:
+
+- model operations as `Effect<A, E, R>`;
+- use stable `Effect.fn("Name")` functions;
+- use `Context.Service` ports and named Layers;
+- use `ManagedRuntime` only at composition/runtime boundaries;
+- use scoped fibers and Effect `Schedule` for Bun background maintenance;
+- decode every external value with `Schema`, including env, JSON, SQL, JWT claims, OAuth responses,
+  usage responses, Durable Object RPC, and encrypted envelopes;
+- use `Schema.Class` for persisted/transmitted models;
+- use `Schema.TaggedErrorClass` for expected failures;
+- use `Redacted` for every secret value;
+- use `Effect.result`, typed recovery, interruption, and scoped cleanup instead of ad hoc promise
+  catch trees;
+- test Effects with `@effect/vitest` and dependency Layers.
+
+Do not use `any`, unchecked double casts, non-null assertions, namespaces, thrown strings, raw
+probing of `unknown`, scattered `Effect.provide`, or one-off global mutable service containers.
+
+The Worker environment and Durable Object stub are request-scoped. Never retain a request’s bindings
+in a global ManagedRuntime. Keep the runtime alive through the response stream and dispose it once
+the body ends, errors, or is cancelled.
 
 ## Protocol and streaming contract
 
-Supported incoming POST paths:
+Accepted model `POST` paths:
 
 - `/responses`
 - `/v1/responses`
@@ -114,235 +128,270 @@ Supported incoming POST paths:
 - `/responses/compact`
 - `/v1/responses/compact`
 
-All model traffic maps to `https://chatgpt.com/backend-api/codex/responses`.
+They all map to `https://chatgpt.com/backend-api/codex/responses`.
 
-Native Codex remote compaction may arrive at `/codex/responses` with a `compaction_trigger`; forward
-it opaquely. Do not parse or persist prompts, input items, tool calls, encrypted reasoning,
-summaries, compaction artifacts, or model output.
+Native Codex compaction fields are opaque. Do not parse or persist prompts, input items, tool calls,
+encrypted reasoning, summaries, compaction artifacts, or model output.
 
 Invariants:
 
-1. Authenticate before touching the request body.
-2. Validate method and path before route acquisition.
-3. Use only explicit, non-empty session headers of at most 256 characters.
-4. Acquire one route and one credential.
+1. Authenticate before body access.
+2. Validate method/path before account acquisition.
+3. Accept only explicit, non-empty session identifiers up to 256 characters.
+4. Acquire one account, lease, and current credential generation.
 5. Strip caller provider credentials and hop-by-hop headers.
-6. Inject only the selected upstream credential.
-7. Transmit once. Never replay after transmission begins.
+6. Inject only the selected subscription credential.
+7. Transmit once; never replay after the transport call.
 8. Never call `text()`, `json()`, `arrayBuffer()`, `clone()`, or `tee()` on a model request or
    response.
-9. Preserve upstream status, status text, safe headers, SSE ordering, and bytes.
-10. Release the lease on empty response, normal end, cancellation, stream error, or pre-response
-    transport failure.
-11. Renew a long stream no more often than once per 40 seconds. Never renew per chunk.
-12. Bookkeeping failure must not replace a real upstream response.
+9. Preserve upstream status, status text, safe headers, ordering, chunks, and bytes.
+10. Release on empty body, end, cancellation, read error, or pre-response transport failure.
+11. Renew a long stream no more often than once per elapsed 40 seconds.
+12. Bookkeeping failure must never replace a real upstream response.
 
-Remove these response headers because runtimes may decode or reframe the stream: `connection`,
-`content-encoding`, `content-length`, `proxy-authenticate`, `te`, `trailer`, `transfer-encoding`,
-and `upgrade`.
+Remove response headers invalidated by runtime decoding/reframing: `connection`, `content-encoding`,
+`content-length`, `proxy-authenticate`, `te`, `trailer`, `transfer-encoding`, and `upgrade`.
 
-HTTP only is the initial compatibility contract. Do not advertise WebSocket support until an
-independent native Codex WebSocket protocol canary exists. AI Gateway’s WebSocket envelope is not
-the same contract.
+## AI Gateway SSE encapsulation
 
-## Selection contract
+The deployed custom-provider path inserted random `nonce` properties into JSON SSE events even with
+payload logging disabled.
+
+To preserve bytes:
+
+- the relay carries upstream SSE through AI Gateway as `application/octet-stream`;
+- it adds only `x-codex-upstream-content-type: text/event-stream`;
+- the Worker removes the marker and restores `text/event-stream`;
+- neither side reads or reserializes the body.
+
+Do not “simplify” this away without repeating the deployed exact-byte fixture and confirming that AI
+Gateway no longer mutates the stream.
+
+## Selection policy
 
 Carry forward the tested AgentOS policy:
 
-1. Reject reauthentication-required accounts.
+1. Reject disabled or reauthentication-required accounts.
 2. Reject active quota or transient blocks.
 3. Reject unknown usage.
-4. Reject snapshots older than 24 hours.
-5. Reject missing or elapsed weekly reset timestamps.
-6. Treat data older than 60 seconds as stale, but usable only as a fallback tier.
-7. Apply a five-percentage-point penalty to stale weekly headroom.
-8. Require at least 10% short-window and 3% weekly remaining quota.
-9. Compute expiry urgency as:
+4. Reject usage older than 24 hours.
+5. Reject missing or elapsed weekly resets.
+6. Treat usage older than 60 seconds as stale fallback.
+7. Penalize stale weekly headroom by five percentage points.
+8. Require 10% short-window and 3% weekly remaining.
+9. Score quota-expiry urgency as:
 
    ```text
-   remaining weekly percent / max(0.25, hours until reset)
+   weekly remaining percent / max(0.25, hours until weekly reset)
    ```
 
-10. Prefer the greatest expiry urgency so quota at risk of expiring unused is consumed.
-11. Keep the existing session account when it is within 10% of the best eligible score.
-12. Break ties by weekly remaining quota, short-window remaining quota, active reservations, then
-    opaque account ID.
+10. Prefer quota most at risk of expiring unused.
+11. Keep a session’s current eligible account when within 10% of the best score.
+12. Break ties by weekly remaining, short remaining, active reservations, then opaque account ID.
 
-Never round-robin individual requests. Session affinity protects prompt-cache locality and
-multi-turn continuity. An anonymous request gets no inferred stickiness; never derive it from IP,
-user agent, prompt content, or credentials.
+A known weekly-only provider response is valid. Model the absent short window as unused with no
+reset. Continue to reject short-only, malformed, negative, non-finite, or unknown-duration windows.
 
-## State contract
+Never round-robin individual requests. Never derive stickiness from IP, user agent, prompt, token,
+credential, or human identity.
 
-Atomic acquisition performs expiry cleanup, health overlay, selection, lease insertion, and optional
-assignment upsert in one transaction.
+## State and lifecycle
 
 - Assignment TTL: seven days.
 - Lease TTL: 120 seconds.
 - Stream renewal interval: 40 seconds.
 - Usage freshness: 60 seconds.
 - Maximum usage age: 24 hours.
+- Refresh claim TTL: 30 seconds.
+- Credential refresh lead: five minutes.
+- Maintenance cadence: one minute.
 
-Cloudflare uses one SQLite Durable Object named `global`. The public Worker may send only small
-state or encrypted-vault RPC payloads to it. Model request and response bodies must never enter the
-Durable Object. The object must not perform the model fetch or hold a stream open.
+Atomic acquisition cleans expired state, overlays response health, selects with reservation counts,
+creates a lease, and optionally upserts the assignment.
 
-Bun uses SQLite `BEGIN IMMEDIATE`. A SQLite file on a Kubernetes PVC defaults to one replica.
-Multi-replica Bun requires a storage design that provides the same transaction semantics; do not
-mount one ordinary SQLite PVC read-write from multiple replicas.
+Every credential has a monotonically increasing router generation:
 
-Workers KV is forbidden for leases, assignments, quota blocks, refresh locks, or credentials.
-Eventual consistency and missing atomic compare/update semantics make it unsafe for routing state.
+- refresh and usage claims carry the expected generation;
+- refresh commits advance by exactly one;
+- provider identity must remain equal;
+- usage commits apply only to their producing generation;
+- 401/health evidence applies only if its generation remains current;
+- late work from generation N must never invalidate N+1.
+
+On invalid grant or provider-identity change, mark only the matching current generation as requiring
+reauthentication. On transient refresh/usage failures, retain valid stale usage within the 24-hour
+limit.
+
+Cloudflare uses one SQLite Durable Object named `global`. It owns account/routing state and
+encrypted credentials but never receives model bodies or holds model streams.
+
+Bun uses native SQLite and `BEGIN IMMEDIATE`. One normal SQLite PVC means one writer replica.
+Multi-replica Bun requires a different state adapter with equivalent atomicity.
+
+Workers KV is forbidden for credentials, claims, leases, assignments, blocks, and quota because it
+lacks the required atomic consistency.
 
 ## Credential and privacy contract
 
-- Credential bundles never appear in candidates, decisions, summaries, errors, telemetry, URLs,
-  response headers, or logs.
-- Cloudflare persists credential bundles only as AES-256-GCM ciphertext.
-- Use a 96-bit random nonce, explicit key version, and opaque account ID as additional authenticated
-  data.
-- Rotate by adding a new version, making it current, re-encrypting, verifying, then retiring the
-  prior version. Never silently reuse a version with different key bytes.
-- The Cloudflare AI Gateway Run token stays in the Worker and is added only as
-  `cf-aig-authorization`.
-- Always send `cf-aig-skip-cache: true`, `cf-aig-collect-log-payload: false`, and
+- Credential bundles never appear in candidates, decisions, summaries, errors, URLs, response
+  headers, telemetry, or logs.
+- Cloudflare persists bundles only as AES-256-GCM ciphertext.
+- Use a random 96-bit nonce, explicit immutable key version, and opaque account ID as AAD.
+- Keep all key versions that still have ciphertext; never reuse a version with different bytes.
+- Old-version decryption may migrate the record with a fresh nonce under the current key.
+- Disabled accounts must be explicitly exercised before old-key retirement.
+- Bun SQLite credential rows require encrypted storage/backups and strict filesystem access.
+- AI Gateway Run token is added only as `cf-aig-authorization`.
+- Always set `cf-aig-skip-cache: true`, `cf-aig-collect-log-payload: false`, and
   `cf-aig-max-attempts: 1`.
-- AI Gateway metadata is limited to five bounded, non-sensitive values.
-- Response DLP is off because it buffers the whole response. Request DLP is also off by default
-  because this proxy’s primary privacy rule is not to inspect model payloads.
-- Do not use AI Gateway `/compat` or Dynamic Routing for subscription account selection.
-- Do not log full headers. `authorization`, `api-key`, `x-api-key`, `chatgpt-account-id`, refresh
-  material, cookies, and account-provider identities are sensitive.
-- Status surfaces expose only opaque account IDs, block categories, reauthentication booleans,
-  assignment counts, and reservation counts.
+- AI Gateway metadata is bounded to five small non-sensitive entries.
+- DLP is off because request inspection and response buffering violate the proxy boundary.
+- Never log full headers. Authorization, API-key variants, router/admin/relay tokens,
+  `chatgpt-account-id`, cookies, refresh material, and forwarded identity are sensitive.
+- Status/admin surfaces expose opaque IDs and sanitized state only.
 
-## Observed request-volume baseline
+## Egress relay contract
 
-This lower-bound audit was reconstructed on 2026-07-30 from local Codex rollout JSONL and live
-AgentOS homes. Preserve these numbers in capacity discussions until a newer reproducible audit
-supersedes them:
+Cloudflare AI Gateway’s direct custom-provider egress to `chatgpt.com` was rejected during deployed
+testing. The custom provider targets a dedicated Cloudflare Tunnel to the Bun relay.
 
-- Local Codex: 8,028 rollout files from February 2 through July 30.
-- Raw local completion/token records: 1,993,486.
-- Inferred distinct completed local model calls after fork/resume deduplication: 570,364.
-- Remote live AgentOS homes, July 21–30: about 15,219 calls.
-- Local OrbStack AgentOS: 1,349 calls.
-- Known combined lower bound: about 586,932 calls.
-- Twenty scaled-to-zero remote AgentOS StatefulSets still have bound 20 GiB PVCs that were not
-  mounted for the audit, so they remain uncounted.
-- No matching rollout filenames were found between the audited local and remote sets.
-- Last nine complete UTC days: 105,034 calls.
-- Recent average: 11,670 calls/day.
-- Observed peak: 24,657 calls/day, 117/minute, and 9/second.
-- Remote-cluster peak: about 3,249 calls/day.
-- The inspected AgentOS gateway had two accounts and 69 sticky assignments.
+The relay:
 
-At the observed peak:
+- accepts unauthenticated `GET /healthz` only;
+- authenticates all other requests with the distinct relay transport token;
+- accepts only tested usage, Responses, and synthetic-canary routes, including AI Gateway’s `/v1`
+  prefix;
+- uses fixed upstream URLs;
+- requires the selected subscription authorization and provider-account identity;
+- strips relay, Cloudflare, forwarded, cookie, compression, origin, and hop headers;
+- never selects accounts, refreshes OAuth, or parses payloads;
+- runs non-root with a read-only filesystem, no service-account token/capabilities, resource limits,
+  pinned images, no ingress, and DNS/443/7844-only egress.
 
-- One Worker invocation per call is 24.657% of the Workers Free 100,000/day request allowance.
-- Three normal Durable Object operations per completed call—acquire, record, release—are about
-  73,971/day, 73.971% of the DO Free request allowance.
-- A response lasting over 40 seconds adds renewals and can cross the DO Free allowance. Measure
-  long-stream frequency before treating Free as guaranteed.
-- AI Gateway’s 500 logs/second ingress limit is far above the observed 9/second peak.
-- AI Gateway’s 100,000 stored-log Free allowance fills in about 8.6 days at 11,670/day unless
-  auto-delete or export is configured.
+Do not turn it into a general open proxy.
 
-Worker Free CPU is the tighter uncertainty: 10 ms per invocation. The current dry-run bundle is
-about 1.1 MiB uncompressed and 227 KiB gzip, but bundle size does not prove CPU fit. A deployed
-canary must measure startup and CPU. Keep the hot path opaque and avoid schema-decoding the model
-body.
+## Request-volume and capacity baseline
 
-## AgentOS and Pi evidence to preserve
+Audit date: 2026-07-30.
+
+- Local Codex: 8,028 rollout files.
+- Raw local terminal records: 1,993,486.
+- Inferred distinct local completed calls after resume/fork deduplication: 570,364.
+- Remote live AgentOS calls, July 21–30: ~15,219.
+- Local OrbStack AgentOS: 1,349.
+- Known combined lower bound: ~586,932.
+- Twenty scaled-to-zero AgentOS StatefulSets had unmounted 20 GiB PVCs and remain uncounted.
+- No matching rollout filenames were found between audited local and remote sets.
+- Last nine complete UTC days: 105,034.
+- Recent average: 11,670/day.
+- Observed peak: 24,657/day, 117/minute, 9/second.
+- Remote-cluster peak: ~3,249/day.
+- Inspected AgentOS gateway: two accounts and 69 sticky assignments.
+
+At peak plus minute maintenance:
+
+- Worker requests: 26,097/day, 26.097% of 100,000/day.
+- Baseline DO requests: 75,411/day, 75.411% before long-stream renewals/admin traffic.
+- AI Gateway peak ingress: 1.8% of 500 logs/second.
+- AI Gateway 100,000-log history lasts about 7.6 days with one enabled account or 6.9 days with two
+  at the recent model average.
+
+The final post-deploy smoke recorded four successful Worker invocations with 50.752 ms aggregate CPU
+(12.688 ms average), and the fuller real-canary window recorded nine with 187.188 ms (20.80 ms
+average) and a 46.481 ms minute p99. Request counts fit Free; CPU does not justify a Free-tier
+guarantee. Prefer Workers Paid unless newer representative telemetry proves otherwise.
+
+## AgentOS and Pi evidence
 
 The design was derived from `/Users/robin/Developer/cnap-tech/agentos`:
 
-- AgentOS already uses 60-second quota freshness, 120-second leases, seven-day assignments, 10%
-  hysteresis, 10% short-window headroom, 3% weekly headroom, 24-hour maximum stale age, and a
-  five-point stale penalty.
-- Its vault uses private directories/files, atomic JSON replacement, refresh locks, rejected-token
-  generation checks, and provider-account consistency checks.
-- Its proxy authenticates before body access, strips credentials/hop headers, injects the selected
-  account, streams without parsing, renews at 40 seconds, and lets the real response win over
-  bookkeeping failure.
-- It classifies 401 as reauthentication, 429 as quota cooldown, 403 as policy/workspace/origin
-  evidence, 404 as model/account availability, and 5xx as transient.
-- Its Pi remote-compaction extension uses a 120-second default and 600-second maximum timeout, 16
-  MiB maximum response, terminal completion events, exactly one canonical compaction artifact,
-  explicit session/prompt-cache identifiers, opaque response-item preservation, and a local summary
-  fallback.
+- quota freshness/age, selection thresholds, expiry urgency, stale penalty, affinity, leases, and
+  renewal intervals;
+- private vault files, atomic replacement, refresh claims, rejected-token generation checks, and
+  provider-identity verification;
+- auth-before-body, header stripping, selected credential injection, one-send streaming, and
+  response-first bookkeeping;
+- response classification for 401/429/403/404/5xx.
 
-When porting the missing live quota and refresh implementation, preserve those checks. Do not copy
-runtime-specific file or Kubernetes concerns into portable packages.
+The Pi remote-compaction extension contributed the client-side expectations for 120/600-second
+timeouts, a 16 MiB response bound, terminal completion, exactly one canonical artifact, explicit
+session/cache identifiers, opaque item preservation, and local fallback.
 
-## Known platform and protocol hazards
+Keep those compaction response-size/artifact checks in the client/extension. The proxy must remain
+opaque.
 
-- Local Wrangler/Miniflare has documented compressed-response buffering differences from deployed
-  Workers. Unit tests and `wrangler dev` do not replace a deployed SSE canary.
-- Cloudflare’s `TransformStream` implementation has compatibility notes. Prefer the smallest Web
-  Streams surface and byte-identity tests.
-- Node compatibility includes partial implementations and import-only stubs. Do not enable
-  `nodejs_compat` unless a verified dependency requires it.
-- AI Gateway retry, cache, payload logging, DLP, or Dynamic Routing settings can silently violate
-  the transparent single-send contract. Override them per request and verify the dashboard.
-- A 401 may invalidate only one credential generation. The future refresh port must not mark a newly
-  rotated token bad because an older in-flight token was rejected.
-- `Retry-After` may be seconds or an HTTP date. It is not the same as provider quota-reset data.
-- Never retry after response bytes begin. Model work and tool side effects may already exist.
-- A client that abandons a body without cancelling it can leave a lease until TTL cleanup.
-- Bootstrap quota snapshots become stale. Until the live quota cache lands, operators must refresh
-  snapshots and restart before 24 hours; this is not production-safe automation.
-- Bootstrap access tokens expire. Until OAuth refresh lands, reauthentication is manual.
+## Issues not to introduce
+
+- No API-key or provider-budget mode.
+- No prompt classification or semantic model choice.
+- No body logging, DLP, caching, replay, fallback transmission, JSON/SSE parsing, hashing, cloning,
+  teeing, or buffering.
+- No global Worker runtime holding request-bound bindings.
+- No model stream through the Durable Object.
+- No KV coordination.
+- No session inference from personal/network data.
+- No static relay header in AI Gateway in place of per-request secret injection.
+- No direct `chatgpt.com` AI Gateway provider until a deployed canary proves it works.
+- No removal of SSE encapsulation based only on local tests.
+- No broad relay route, redirects, cluster ingress, service-account token, floating image tag, or
+  unrestricted egress.
+- No secret in a command argument, ConfigMap, Git diff, log, status, test snapshot, or ticket.
+- No old AES key retirement while ciphertext count is nonzero.
+- No claim that bundle size proves CPU fit.
+- No use of local Miniflare success as deployed stream evidence.
+- No TODO/FIXME, fake secret, placeholder identity, or unsupported-product claim in committed docs.
 
 ## Development workflow
 
 Use test-driven development for every behavior change:
 
-1. Add a focused failing test.
-2. Run it and confirm the expected failure.
-3. Implement the smallest coherent behavior.
-4. Run the focused suite.
-5. Run the full gates.
+1. write a focused failing test;
+2. run it and confirm the expected failure;
+3. implement the smallest coherent behavior;
+4. run the focused suite;
+5. run the full gate.
 
-Required gates:
+Required gate:
 
 ```bash
-bun run format:check
-bun run lint
-bun run typecheck
-bun test
-bun run build:worker
+bun run check
+git diff --check
 ```
 
-`bun run check` runs the complete sequence. Also run `git diff --check` and scan changed code for
-unchecked casts, `any`, non-null assertions, secrets, placeholders, and model-body reads.
+Also scan changed code for:
 
-Tests must cover:
+- `any`, double casts, non-null assertions, namespaces, secret-like literals;
+- model-body reads/clones/tees;
+- caller credentials escaping sanitation;
+- API-key/upstream regressions;
+- placeholders and stale documentation.
 
-- selection health, blocks, freshness, headroom, urgency, hysteresis, reservations, and stable ties;
-- concurrent atomic acquisition, assignment/lease expiry, renew/release, and sanitized summaries;
-- 401/429/403/404/5xx classification;
-- both observed Codex usage shapes and duration/reset normalization;
-- auth-before-body-access, every path, header stripping, opaque bytes, empty streams, cancellation,
-  transport failure, bookkeeping failure, and compaction payloads;
-- SQLite visibility across two instances;
-- AES-GCM nonce/key/AAD failures;
-- AI Gateway privacy/retry/cache headers;
-- Worker RPC payload separation and Wrangler dry-run.
+Tests must cover selection, freshness, weekly-only usage, generation races, concurrent acquisition,
+claim expiry, OAuth refresh/identity checks, response classification, auth-before-body, all paths,
+header stripping, exact bytes, empty/cancelled/error streams, bounded renewal, bookkeeping failure,
+SQLite visibility, AES key/AAD/nonce/version failures, key migration, admin auth/lifecycle, AI
+Gateway privacy/encapsulation, Worker request lifetime, scheduled maintenance, relay fixed routes,
+Kubernetes hardening, and Wrangler dry run.
 
-## Delivery and documentation
+## Delivery
 
-The owner has authorized direct, verified pushes to `main` for this repository. That authorization
-does not waive tests, review of the diff, or remote verification.
+Direct verified pushes to `main` are authorized. That does not waive:
 
-Keep these documents synchronized with behavior:
+- full local gate;
+- diff/security review;
+- immutable relay image rebuild and Kubernetes rollout when relay sources change;
+- Worker deploy when Worker sources/config change;
+- deployed health/status/synthetic/privacy verification;
+- remote commit synchronization.
 
-- `README.md`: user-facing scope, status, setup, and entry points.
-- `docs/architecture.md`: ports, data flow, policy, and runtime boundaries.
-- `docs/operations.md`: secrets, deployment, canary, capacity, backup, and rollback.
-- `docs/research.md`: evidence, request audit, alternatives, and dated external limits.
-- `docs/security.md`: threat model, controls, gaps, rotation, and incident response.
+Keep these synchronized:
 
-Do not leave `TODO`, `FIXME`, fake secrets, placeholder account IDs, unverified performance claims,
-or unsupported-product claims in committed docs. If a capability is incomplete, name it plainly as a
-limitation and list the release gate.
+- `README.md`
+- `docs/architecture.md`
+- `docs/operations.md`
+- `docs/canary.md`
+- `docs/research.md`
+- `docs/security.md`
+
+Use Cloudflare MCP/API or Wrangler for Cloudflare operations. Do not use browser automation for
+Cloudflare control-plane changes.

@@ -1,50 +1,115 @@
 # Operations
 
-## Readiness classification
+## Readiness
 
-The repository can be built, tested, and exercised with controlled traffic. It is not ready for
-unattended subscription pooling because live quota refresh, OAuth refresh, credential-generation
-locking, deployed Worker CPU measurements, deployed SSE verification, and policy review remain open
-release gates.
+The subscription path has passed unit/integration gates, a deployed exact-byte synthetic SSE canary,
+a live quota probe, and a minimal real Codex CLI Responses canary through Cloudflare AI Gateway and
+the tunnel relay.
 
-Standard OpenAI API-key forwarding does not remove the live-quota limitation: configured usage
-snapshots still age out.
+The safe operational classification is:
 
-## Configuration
+- technically deployable and verified for controlled subscription traffic;
+- Workers Paid is the conservative Cloudflare plan because observed CPU is not consistently below
+  the Free plan’s 10 ms invocation allowance;
+- organizational approval remains required because multi-account ChatGPT OAuth pooling is not a
+  documented OpenAI public API workflow;
+- HTTP/SSE only; no WebSocket compatibility claim;
+- one Bun writer replica per native SQLite database.
 
-Create the account array in a secret manager, not in this repository or a shell-history command.
-Every account item requires:
+See [canary.md](canary.md) for dated evidence.
 
-| Field               | Constraint                                         |
-| ------------------- | -------------------------------------------------- |
-| `accountId`         | Stable opaque non-human identifier                 |
-| `kind`              | `codex_subscription` or `openai_api_key`           |
-| `accessToken`       | Current upstream secret                            |
-| `providerAccountId` | Present only when the upstream adapter requires it |
-| `observedAt`        | Epoch milliseconds                                 |
-| `shortUsedPercent`  | Finite used percentage                             |
-| `shortResetAt`      | Future epoch milliseconds                          |
-| `weeklyUsedPercent` | Finite used percentage                             |
-| `weeklyResetAt`     | Future epoch milliseconds                          |
+## Secret inventory
 
-The decoder rejects an empty array and malformed structures. Operators must additionally ensure
-percentages and timestamps came from the intended provider account. Current code treats snapshots
-older than 60 seconds as stale and rejects them after 24 hours.
+Keep every value in Wrangler secrets, Kubernetes Secrets/external secrets, or an organization secret
+manager. Values must not enter Git, ConfigMaps, Pod annotations, image layers, URLs, or
+shell-history arguments.
 
-## Bun deployment
+### Worker
 
-Required secret environment:
+| Binding                             | Purpose                                                      |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `CODEX_ROUTER_CLIENT_TOKEN`         | Model ingress authentication                                 |
+| `CODEX_ROUTER_ADMIN_TOKEN`          | Account admin and internal Durable Object RPC authentication |
+| `CODEX_ROUTER_RELAY_TOKEN`          | AI Gateway-to-relay transport authentication                 |
+| `CODEX_ROUTER_CREDENTIAL_KEYS_JSON` | Versioned AES-256-GCM keyring                                |
+| `CF_AIG_ACCOUNT_ID`                 | AI Gateway account routing                                   |
+| `CF_AIG_GATEWAY_ID`                 | AI Gateway identifier                                        |
+| `CF_AIG_CUSTOM_PROVIDER_SLUG`       | Custom provider slug without `custom-`                       |
+| `CF_AIG_TOKEN`                      | AI Gateway Run token                                         |
+| `CODEX_ROUTER_ACCOUNTS_JSON`        | Optional bootstrap-only account array                        |
+
+The client, admin, and relay tokens must all differ.
+
+### Bun router
+
+Required:
 
 - `CODEX_ROUTER_CLIENT_TOKEN`
-- `CODEX_ROUTER_ACCOUNTS_JSON`
+- `CODEX_ROUTER_ADMIN_TOKEN`
 
-Runtime settings:
+Optional:
 
+- `CODEX_ROUTER_ACCOUNTS_JSON`, default `[]`;
 - `CODEX_ROUTER_DATABASE_PATH`, default `./data/codex-router.sqlite`;
 - `HOST`, default `0.0.0.0`;
 - `PORT`, default `8787`.
 
-Start:
+### Relay
+
+The relay needs only:
+
+- `CODEX_ROUTER_RELAY_TOKEN`;
+- `HOST`, default `0.0.0.0`;
+- `PORT`, default `8788`.
+
+The Cloudflare Tunnel sidecar consumes its own tunnel token. The committed Kubernetes deployment
+expects:
+
+- Secret `codex-router-egress` with keys `relay-token` and `tunnel-token`;
+- image-pull Secret `codex-router-ghcr`.
+
+Those Secret objects are intentionally not committed.
+
+## Account bootstrap and administration
+
+Routine account lifecycle uses the admin client:
+
+```bash
+export CODEX_ROUTER_ADMIN_URL=https://router.example
+export CODEX_ROUTER_ADMIN_TOKEN=loaded-by-the-operator-secret-shell
+
+bun run admin:bun list
+bun run admin:bun login primary
+bun run admin:bun disable primary
+bun run admin:bun enable primary
+bun run admin:bun remove primary
+```
+
+`login` starts OpenAI device authorization, polls with the provider-defined interval, verifies the
+provider account identity embedded in the access token, and stores a new router generation.
+
+`CODEX_ROUTER_ACCOUNTS_JSON` exists only for first deployment or recovery seeding. Existing accounts
+are never overwritten by bootstrap input. Each item is a subscription credential and initial usage
+snapshot:
+
+| Field               | Constraint                               |
+| ------------------- | ---------------------------------------- |
+| `accountId`         | Stable opaque router-local identifier    |
+| `accessToken`       | Current subscription access token        |
+| `refreshToken`      | Current subscription refresh token       |
+| `expiresAt`         | Access-token expiry epoch milliseconds   |
+| `providerAccountId` | Provider identity for consistency checks |
+| `observedAt`        | Quota observation epoch milliseconds     |
+| `shortUsedPercent`  | Finite short-window percentage           |
+| `shortResetAt`      | Short-window reset epoch milliseconds    |
+| `weeklyUsedPercent` | Finite weekly-window percentage          |
+| `weeklyResetAt`     | Weekly reset epoch milliseconds          |
+
+After account import, maintenance refreshes quota every 60 seconds and refreshes credentials five
+minutes before expiry. A weekly-only provider response remains valid; the router models the absent
+short window as unused.
+
+## Bun deployment
 
 ```bash
 bun install --frozen-lockfile
@@ -54,52 +119,68 @@ bun run start:bun
 
 For Kubernetes:
 
-- inject required values from a Secret or external secret provider;
-- mount a persistent volume at the parent of `CODEX_ROUTER_DATABASE_PATH`;
-- deploy one replica while native SQLite is the state implementation;
-- use `GET /healthz` for liveness;
-- protect ingress with TLS and a separate network/access policy;
-- give termination enough time for the Bun server’s graceful stop;
-- never put the account JSON in a ConfigMap, Pod annotation, command argument, or rendered Helm
-  output.
+- mount a persistent volume at the database parent directory;
+- run one replica for that native SQLite file;
+- use `GET /healthz` for liveness/readiness;
+- protect ingress with TLS and network/access policy;
+- allow graceful shutdown;
+- source secrets through a Secret or external-secret controller.
 
-The repository deliberately does not include a generic Kubernetes manifest because storage, ingress,
-and secret-manager choices belong to AgentOS. AgentOS should import the packages and provide its
-existing live quota/vault layers instead of duplicating policy.
+The Effect maintenance fiber starts with the application scope and repeats every minute. It stops
+when the ManagedRuntime closes.
 
 ## Cloudflare deployment
 
-### Prerequisites
+### AI Gateway
 
-- a Cloudflare account with Workers, SQLite Durable Objects, and AI Gateway;
-- one AI Gateway;
-- an AI Gateway Run token;
-- a custom provider rooted at `https://chatgpt.com` only if experimental subscription traffic is
-  being evaluated;
-- all terms and data reviews required by the account owner.
+Create one AI Gateway with:
 
-Cloudflare custom-provider slugs are configured without `custom-` in `CF_AIG_CUSTOM_PROVIDER_SLUG`;
-the transport adds the required prefix.
+- authentication enabled;
+- request logs enabled;
+- payload logging disabled;
+- cache skipped;
+- maximum attempts one;
+- log management set to delete oldest entries at the account limit.
 
-### Bindings
+Create a custom provider whose base URL is the authenticated Cloudflare Tunnel hostname for the Bun
+relay. Keep static custom-provider headers empty. The Worker adds the run token, relay token, cache,
+payload, retry, and bounded metadata headers on every request.
 
-Use Wrangler’s interactive secret input:
+Do not point the provider directly at `chatgpt.com`: the deployed direct-egress canary was rejected
+upstream. Do not configure `x-api-key` as a static provider header; it would make rotation harder
+and was not reliable in the tested custom-provider path.
+
+### Worker bindings
+
+Enter every binding through Wrangler stdin:
 
 ```bash
 bunx wrangler secret put CODEX_ROUTER_CLIENT_TOKEN --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CODEX_ROUTER_ACCOUNTS_JSON --config apps/worker/wrangler.jsonc
+bunx wrangler secret put CODEX_ROUTER_ADMIN_TOKEN --config apps/worker/wrangler.jsonc
+bunx wrangler secret put CODEX_ROUTER_RELAY_TOKEN --config apps/worker/wrangler.jsonc
+bunx wrangler secret put CODEX_ROUTER_CREDENTIAL_KEYS_JSON --config apps/worker/wrangler.jsonc
 bunx wrangler secret put CF_AIG_ACCOUNT_ID --config apps/worker/wrangler.jsonc
 bunx wrangler secret put CF_AIG_GATEWAY_ID --config apps/worker/wrangler.jsonc
 bunx wrangler secret put CF_AIG_CUSTOM_PROVIDER_SLUG --config apps/worker/wrangler.jsonc
 bunx wrangler secret put CF_AIG_TOKEN --config apps/worker/wrangler.jsonc
-openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' | bunx wrangler secret put CODEX_ROUTER_CREDENTIAL_KEY --config apps/worker/wrangler.jsonc
 ```
 
-`CODEX_ROUTER_CREDENTIAL_KEY` must decode from base64url to exactly 32 bytes. Store the source key
-and its recovery procedure in the organization secret manager before deployment. Losing the only key
-makes the Durable Object vault unreadable.
+Generate each AES key as 32 random bytes encoded with unpadded base64url. The keyring is:
 
-### Build and deploy
+```json
+{
+  "currentVersion": "v2",
+  "keys": {
+    "v1": "base64url-encoded-32-byte-key",
+    "v2": "base64url-encoded-32-byte-key"
+  }
+}
+```
+
+Keep the source keyring and recovery procedure in the organization secret manager before importing
+accounts. Loss of every version used by stored ciphertext makes those credentials unrecoverable.
+
+Deploy:
 
 ```bash
 bun install --frozen-lockfile
@@ -107,158 +188,232 @@ bun run check
 bun run deploy:worker
 ```
 
-The Wrangler migration creates the SQLite-backed `RouterStateObject`. Do not change its class name,
-namespace, or migration history casually; treat those as storage schema identifiers.
+The checked-in migration creates the SQLite-backed `RouterStateObject`. Treat its class name,
+namespace, and migration history as persistent storage identifiers.
 
-## Deployed canary
+The cron trigger runs every minute. A scheduled event creates a request-scoped application, runs
+portable maintenance, then disposes the runtime.
 
-Local tests and `wrangler dev` are necessary but insufficient. Before real traffic:
+### Relay deployment
 
-1. Confirm an unauthenticated request is rejected before a body source is read.
-2. Confirm all five supported paths reach the expected upstream URL.
-3. Send a deliberately chunked SSE response through a controlled upstream.
-4. Compare chunk bytes, ordering, status, status text, and safe headers at the client.
-5. Measure time to first byte and confirm the response arrives incrementally.
-6. Cancel a stream and verify active reservations return to zero.
-7. Run a stream longer than 40 seconds and verify bounded renewals.
-8. Confirm a fast stream causes only acquire, record, and release state operations.
-9. Return controlled 401, 429 with both `Retry-After` forms, 403, 404, and 5xx responses; inspect
-   sanitized `/status`.
-10. Confirm AI Gateway shows metadata and token/latency fields but no prompt or response payload.
-11. Confirm cache is skipped and the maximum provider attempt count is one.
-12. Inspect Worker CPU time, startup behavior, error 1102 counts, Durable Object requests, rows
-    read/written, and duration.
-13. Repeat under observed peak concurrency and with abrupt client disconnects.
+Build and push the pinned Bun image, update its immutable GHCR digest in
+`deploy/kubernetes/relay/deployment.yaml`, then:
 
-Cloudflare has a documented Miniflare response-buffering issue, so an incremental local result
-cannot prove deployed behavior; see
-[workers-sdk issue 8004](https://github.com/cloudflare/workers-sdk/issues/8004).
-
-## Capacity baseline
-
-The July 30, 2026 lower-bound audit found:
-
-| Source                      | Inferred completed calls |
-| --------------------------- | -----------------------: |
-| Local Codex rollout history |                  570,364 |
-| Remote live AgentOS homes   |                   15,219 |
-| Local OrbStack AgentOS      |                    1,349 |
-| Known combined lower bound  |                  586,932 |
-
-Twenty scaled-to-zero remote AgentOS StatefulSets had unmounted 20 GiB PVCs and are not in that
-total.
-
-Recent operating profile:
-
-| Measure                     | Observed value |
-| --------------------------- | -------------: |
-| Last nine complete UTC days |  105,034 calls |
-| Average per complete day    |   11,670 calls |
-| Peak complete day           |   24,657 calls |
-| Peak minute                 |      117 calls |
-| Peak second                 |        9 calls |
-| Remote-cluster peak day     |   ~3,249 calls |
-
-### Free-tier fit
-
-Cloudflare’s current Workers Free limit is 100,000 requests/day and 10 ms CPU/request. The observed
-peak would consume 24.657% of the request allowance. Network wait does not count as Worker CPU, but
-Effect orchestration, authentication, Schema work, Web Streams, and logging do. Only a deployed
-canary can establish CPU fit. See
-[Workers limits](https://developers.cloudflare.com/workers/platform/limits/).
-
-SQLite Durable Objects currently allow 100,000 requests/day on Free. A normal completed call uses
-three object requests:
-
-```text
-acquire + record response + release = 3
-24,657 × 3 = 73,971 object requests on the observed peak day
+```bash
+kubectl apply -k deploy/kubernetes/relay
+kubectl -n codex-router rollout status deployment/codex-router-egress
 ```
 
-That is 73.971% before streams longer than 40 seconds add renewals. Free also currently includes
-13,000 GB-s/day, five million rows read/day, 100,000 rows written/day, and 5 GB total SQLite
-storage. State-request count is the first expected DO ceiling, but row and duration telemetry must
-also be watched. See
-[Durable Objects pricing](https://developers.cloudflare.com/durable-objects/platform/pricing/).
+The deployment has:
 
-AI Gateway currently accepts 500 stored logs/second per gateway and stores 100,000 logs total on
-Free across the account. The observed 9/second peak is far below ingress, but at 11,670/day the
-stored-log allowance fills in about 8.6 days. Configure automatic deletion or Logpush before
-assuming continuous dashboard history. See
-[AI Gateway limits](https://developers.cloudflare.com/ai-gateway/reference/limits/).
+- no service-account token;
+- non-root UID/GID 1000;
+- read-only root filesystems and no Linux capabilities;
+- CPU/memory requests and limits;
+- no ingress from the cluster;
+- egress only to DNS plus TCP 443 and 7844;
+- a pinned relay image and pinned `cloudflared` digest;
+- HTTP/2 tunnel transport because the cluster path permits TCP 7844.
 
-Free-tier verdict: the measured request volume fits Worker requests and likely AI Gateway ingress;
-normal DO requests fit with limited headroom. Worker CPU, long-stream renewal distribution, stored
-log retention, and the uncounted PVCs prevent a guarantee.
+The tunnel’s remotely managed ingress points to `http://localhost:8788`; all unmatched routes
+return 404.
+
+## Credential-key rotation
+
+Rotation is online and lazy-on-use:
+
+1. generate a new 32-byte key under a never-used version;
+2. add it to `keys` while retaining every version reported by `GET /admin/key-versions`;
+3. set it as `currentVersion` and update the Worker secret;
+4. deploy/restart the Worker;
+5. allow maintenance and traffic to decrypt each enabled account; decryption rewrites that record
+   with a fresh nonce under the current key;
+6. query `GET /admin/key-versions` with the admin token until the old version count is zero;
+7. explicitly exercise disabled accounts or re-import them before retirement, because routine
+   maintenance skips disabled credentials;
+8. remove the old key only after all ciphertext moved and the rollback window is approved;
+9. deploy and verify account list, live usage, synthetic SSE, and one controlled model request.
+
+Never reuse one version string with different key bytes. Never remove a key while its reported count
+is nonzero.
+
+Rotate the router client token, admin token, AI Gateway Run token, relay token, tunnel token, and
+registry pull credential independently. The current client/admin ingress accepts one generation at a
+time, so coordinate client cutover.
+
+## Canary procedure
+
+Run the synthetic deployed test without printing tokens:
+
+```bash
+CODEX_ROUTER_URL=https://router.example \
+CODEX_ROUTER_ADMIN_TOKEN=loaded-by-the-operator-secret-shell \
+bun run canary:synthetic
+```
+
+It requires:
+
+- one HTTP request;
+- status 200;
+- exactly 62 expected bytes;
+- a first-byte timestamp earlier than completion;
+- no response payload in its report.
+
+Inspect one AI Gateway record with:
+
+```bash
+CF_ACCOUNT_ID=loaded-from-cloudflare \
+CF_AIG_GATEWAY_ID=loaded-from-cloudflare \
+CLOUDFLARE_API_TOKEN=loaded-by-the-operator-secret-shell \
+bun run canary:inspect
+```
+
+The inspector prints only sanitized status/path/cache/timing metadata and stored payload lengths.
+All prompt, request, and response stored lengths must be zero.
+
+For a real canary, use a minimal Codex CLI prompt that has a deterministic tiny answer. Confirm:
+
+- the response completes once;
+- account generation remains current;
+- active reservations return to zero;
+- live usage advances;
+- the corresponding AI Gateway record has payload lengths zero;
+- no Worker or relay log contains headers, credentials, or model content.
+
+Do not run a full-header live tail while sending model/admin traffic.
+
+## Capacity
+
+The 2026-07-30 audit reconstructed completed calls from local Codex rollout JSONL and AgentOS homes:
+
+| Evidence                                              |     Count |
+| ----------------------------------------------------- | --------: |
+| Local rollout files                                   |     8,028 |
+| Raw local terminal completion/token records           | 1,993,486 |
+| Deduplicated inferred local completed calls           |   570,364 |
+| Remote live AgentOS calls, July 21–30                 |   ~15,219 |
+| Local OrbStack AgentOS calls                          |     1,349 |
+| Known combined lower bound                            |  ~586,932 |
+| Scaled-to-zero AgentOS PVCs not mounted for the audit |        20 |
+
+Recent profile:
+
+| Measure                     |      Observed |
+| --------------------------- | ------------: |
+| Last nine complete UTC days | 105,034 calls |
+| Average complete day        |  11,670 calls |
+| Peak complete day           |  24,657 calls |
+| Peak minute                 |     117 calls |
+| Peak second                 |       9 calls |
+| Remote-cluster peak day     |  ~3,249 calls |
+
+This is a lower bound. Missing terminal records and the unmounted PVCs can increase reality;
+resume/fork deduplication is inferential.
+
+### Workers and Durable Objects
+
+At the observed peak:
+
+```text
+model Worker requests                         24,657/day
+minute scheduled events                        1,440/day
+projected Worker invocations                  26,097/day
+
+normal DO calls = acquire + record + release       3/model call
+normal model DO calls                         73,971/day
+minute maintenance DO calls                    1,440/day
+projected baseline DO requests                75,411/day
+remaining before 100,000/day                  24,589/day
+```
+
+Long streams add one DO renewal per elapsed 40-second interval. Status, admin, failed acquisition,
+and canary traffic also consume capacity. Rows read/write remain well below the published five
+million reads/day and 100,000 writes/day in the measured canary, but production telemetry must
+confirm the distribution.
+
+The request-count dimensions fit the Free allowances at the observed lower-bound peak.
+
+The CPU dimension does not have the same verdict. The final post-deploy smoke recorded four
+successful invocations with 50.752 ms total CPU (12.688 ms/invocation average); its minute p50 was
+14.636–19.950 ms and p99 was 15.047–19.950 ms. The fuller real-canary window immediately before the
+release cleanup recorded nine successful invocations with 187.188 ms total CPU (20.80 ms average)
+and minute p99 values up to 46.481 ms. The Free allowance is 10 ms CPU per invocation. Cloudflare
+permits some infrequent flexibility, but these traces do not establish Free-tier safety. Use Workers
+Paid or repeat a representative production CPU study after optimization.
+
+### AI Gateway
+
+The observed 9 requests/second peak is far below AI Gateway’s 500 stored logs/second limit. The
+100,000-log storage allowance is the tighter bound:
+
+```text
+model logs/day at recent average      11,670
+usage logs/day per enabled account     1,440
+one enabled account total             13,110 -> about 7.6 days
+two enabled accounts total            14,550 -> about 6.9 days
+```
+
+The deployed gateway is configured to delete the oldest logs at the limit. Use Logpush/export if a
+longer metadata history is required; never enable payload storage for that purpose.
+
+### Verdict
+
+- Request volume fits Workers Free.
+- Baseline DO request volume fits Free with about 24.6% headroom before renewals/admin traffic.
+- AI Gateway ingress fits; log retention is days, not months.
+- Observed Worker CPU does not justify a Free-tier guarantee.
+- The Kubernetes relay consumes separate cluster resources and is not part of Workers Free.
 
 ## Monitoring
 
 Alert on:
 
-- Worker 5xx, error 1102, CPU p95/p99, and startup regressions;
-- request count approaching the daily account allowance;
-- Durable Object requests, duration, rows written, and failures;
-- `no_eligible_account`, `credential_unavailable`, and `upstream_unavailable`;
-- account reauthentication state and quota/transient blocks;
-- active reservations that persist beyond lease TTL;
-- AI Gateway payload collection becoming enabled;
-- AI Gateway retry/cache settings diverging from the per-request contract;
-- quota snapshots older than 60 seconds and any approaching 24 hours;
-- upstream 401 and 429 rate by opaque account ID.
+- Worker invocation errors, error 1102, CPU p50/p95/p99, and memory/startup regressions;
+- daily Worker and DO request allowance consumption;
+- Durable Object exceeded CPU/memory errors, rows written, and persistent reservation counts;
+- `no_eligible_account`, upstream-unavailable, and credential-unavailable rates;
+- reauthentication state, quota blocks, and generation churn by opaque account ID;
+- quota observation age above 60 seconds or approaching 24 hours;
+- AI Gateway cache/payload/retry/auth configuration drift;
+- gateway log retention and deletion/export health;
+- relay/tunnel availability and unexpected rejected paths.
 
-Keep dimensions bounded. Never attach session values, provider account identities, prompt fields, or
-credentials.
+Never attach session keys, provider identity, credentials, headers, prompts, or model output as
+labels or logs.
 
-## Backup and restore
+## Backup, restore, and rollback
 
 ### Bun
 
-Use the SQLite online backup API or a Kubernetes CSI VolumeSnapshot that is known to be
-application-consistent. Record the application commit and schema version with the backup. Test
-restore into an isolated one-replica deployment and verify:
+Use SQLite’s online backup API or an application-consistent CSI VolumeSnapshot. Record the source
+commit and schema version. Restore into an isolated one-replica deployment and verify account
+generation, usage freshness, assignment cleanup, sanitized status, and login/refresh behavior.
 
-- assignments and reservations decode;
-- expired leases are cleaned on acquisition;
-- `/status` remains sanitized;
-- no credential material exists in the database.
-
-Account credentials live outside this database and must be backed up by the secret manager.
+Unlike the earlier bootstrap-only design, the Bun account database contains subscription credential
+material. Protect backups as credentials and encrypt them at rest.
 
 ### Cloudflare
 
-Durable Object storage is platform managed. Build operational recovery around code versions,
-encrypted credential source material, and reproducible account configuration. Before a storage
-migration, export only sanitized routing state if the platform APIs and policy allow it. Do not
-export decrypted vault records into deployment artifacts.
+Durable Object storage is platform-managed. Recovery depends on:
 
-## Rollback
+- retrievable OAuth refresh sources or repeatable device login;
+- every active credential-encryption key version;
+- Worker secret inventory;
+- tunnel and Kubernetes secret inventory;
+- immutable code/image versions.
 
-For a Worker code regression:
+Never export decrypted vault rows into an artifact.
 
-1. stop new traffic at the client or access layer if confidentiality or duplicate-send behavior is
-   in doubt;
-2. inspect available deployments with Wrangler;
-3. run Wrangler’s interactive rollback using the checked-in config;
-4. verify the resulting deployment and execute the authentication, SSE, and AI Gateway privacy
-   canaries;
-5. verify the Durable Object migration is compatible with the rolled-back code.
+For a Worker code rollback:
 
 ```bash
 bunx wrangler deployments list --config apps/worker/wrangler.jsonc
 bunx wrangler rollback --config apps/worker/wrangler.jsonc
 ```
 
-Do not attempt to roll back a Durable Object storage migration by deleting the namespace. For Bun,
-deploy the prior tested artifact against a compatible database; restore a verified backup only when
-the schema or data itself is damaged.
+Verify migration compatibility before rollback. Do not delete a Durable Object namespace as a
+rollback mechanism. After rollback, run health, status, synthetic SSE, usage, and privacy checks.
 
-## Routine update checklist
-
-- refresh dated Cloudflare limits and recompute capacity;
-- rerun the rollout/PVC request audit;
-- update bootstrap quota data before it ages out;
-- review account ownership and provider identity;
-- run `bun run check` and the deployed canary;
-- inspect AI Gateway retention, payload, cache, retry, and auth settings;
-- verify the secret manager can recover every required binding;
-- verify the remote Git commit matches the deployed source.
+For the relay, update the manifest to a previously verified immutable image digest, apply it, and
+wait for rollout. Do not roll back to a relay that lacks SSE encapsulation while AI Gateway still
+mutates JSON SSE.

@@ -1,16 +1,24 @@
 # Architecture
 
-## Purpose
+## Product boundary
 
-`codex-router` balances Codex Responses traffic across account quota pools. It is intentionally
-narrow: select an eligible account, maintain safe session affinity, reserve capacity, forward one
-opaque request, and preserve one opaque response stream.
+`codex-router` balances Codex Responses traffic across ChatGPT subscription accounts. It is a quota
+and account-health router, not a semantic model router, general OpenAI API proxy, or telemetry
+collector.
 
-It is not a prompt classifier, model-quality router, general OpenAI compatibility gateway, or
-telemetry collector. Cloudflare AI Gateway is downstream observability; it does not own selection
-policy or state.
+Its hot-path responsibilities are deliberately narrow:
 
-## Dependency boundary
+1. authenticate before body access;
+2. acquire one eligible subscription account;
+3. retrieve only that account’s current credential generation;
+4. transmit the request once;
+5. preserve the opaque response stream;
+6. record health and release the lease.
+
+Cloudflare AI Gateway is an observability hop. It does not select accounts or know ChatGPT
+subscription quota.
+
+## Portable dependency boundary
 
 ```text
 @akua-dev/codex-router-core
@@ -19,179 +27,209 @@ policy or state.
 @akua-dev/codex-router-codex
               ^
               |
-       +------+------+
-       |             |
-      Bun       Cloudflare
-       |             |
- apps/server    apps/worker
+       +------+-----------------+
+       |                        |
+@akua-dev/codex-router-bun   @akua-dev/codex-router-cloudflare
+       |                        |
+ apps/server                apps/worker
+
+@akua-dev/codex-router-relay -> apps/relay
 ```
 
-`core` owns domain schemas and decisions. `codex` owns protocol-level services and the transparent
-handler. The runtime packages implement those ports. Runtime-specific imports cannot move into the
-portable packages.
+`core` and `codex` contain no Cloudflare, Wrangler, Bun, Node, filesystem, or Kubernetes imports.
+They model behavior as Effect services. Runtime packages implement the ports and own persistence,
+scheduling, crypto, and process/runtime boundaries.
+
+The relay is separate because it is only a fixed-route transport bridge. It never owns selection,
+usage, refresh, leases, or assignments.
 
 ## Effect service graph
 
-The handler depends on five services:
+| Service                    | Responsibility                                                          |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `ClientAuthenticator`      | Authenticate model callers before body access                           |
+| `AdminAuthenticator`       | Authenticate the separate account-administration surface                |
+| `SubscriptionAccountStore` | Atomic account, credential, usage, claim, lease, assignment persistence |
+| `SubscriptionRouter`       | Refresh, select, acquire, renew, record, release, maintain              |
+| `OAuthClient`              | Device authorization and refresh-token exchange                         |
+| `UsageProbe`               | Fetch and decode live Codex quota windows                               |
+| `AccountAdmin`             | Sanitized list/import/enable/disable/remove lifecycle                   |
+| `UpstreamTransport`        | Perform the one allowed model transmission                              |
+| `GatewayTelemetry`         | Emit bounded payload-free decision/bookkeeping events                   |
 
-| Service               | Responsibility                                                   |
-| --------------------- | ---------------------------------------------------------------- |
-| `ClientAuthenticator` | Compare the caller’s router token before body access             |
-| `AccountDirectory`    | Supply candidates and retrieve only the selected credential      |
-| `RoutingState`        | Atomically acquire, renew, record, release, and summarize routes |
-| `UpstreamTransport`   | Execute the one permitted upstream transmission                  |
-| `GatewayTelemetry`    | Emit bounded routing and bookkeeping events without payloads     |
+External inputs are Schema-decoded. Expected failures are typed. Composition roots build Layers and
+ManagedRuntimes at runtime boundaries.
 
-`UsageProbe` defines the portable live-quota boundary. It is not yet connected to a scheduled
-cache/refresh service; current candidates are decoded from bootstrap configuration.
-
-Every expected error is typed. Runtime values, JSON, SQL rows, request payloads used for state RPC,
-and encrypted envelopes are decoded with Effect Schema. Composition roots build named Layers once
-inside `ManagedRuntime`.
-
-## Request sequence
+## Cloudflare production path
 
 ```text
-client
-  | 1. request headers
-  v
-authenticate
-  | 2. method, path, explicit session
-  v
-RoutingState.acquire
-  | 3. selected opaque account + lease
-  v
-AccountDirectory.credential
-  | 4. secret injected after caller credentials are stripped
-  v
-UpstreamTransport.execute
-  | 5. one request, no replay
-  v
-upstream / AI Gateway
-  | 6. status recorded, response headers sanitized
-  v
-client <---- response bytes streamed unchanged
-  |
-  +---- lease renewed after each elapsed 40-second interval
-  +---- lease released on end, cancellation, error, or empty body
+                         small internal RPC only
+                     +-----------------------------+
+                     |                             v
+client -> Worker -> subscription router -> SQLite Durable Object
+            |                                  |
+            |                                  +-- routing/health/usage
+            |                                  +-- refresh/usage claims
+            |                                  +-- encrypted credentials
+            |
+            | one opaque body stream
+            v
+      AI Gateway custom provider
+            |
+            | Cloudflare Tunnel
+            v
+      Bun egress relay
+            |
+            v
+        chatgpt.com
 ```
 
-The request body remains an unread `ReadableStream`. The response wrapper reads only to relay byte
-chunks and manage the lease lifecycle. It does not decode SSE events, JSON, prompts, tool calls,
-reasoning, summaries, compaction artifacts, or output.
+The Worker constructs a request-scoped ManagedRuntime. This is intentional: a Durable Object stub
+comes from the current request environment and must not leak through a global runtime. The runtime
+stays alive until a streamed response ends, errors, or is cancelled, then disposes exactly once.
 
-## Selection
+The Durable Object is named `global`. It never receives model request or response bodies and never
+holds an upstream stream open.
 
-A candidate is ineligible if it:
+### Why the relay exists
 
-- requires reauthentication;
-- has an active quota or transient block;
-- has no known usage;
-- has usage older than 24 hours;
-- has no future weekly reset;
-- has less than 10% short-window or 3% weekly remaining quota.
+Deployment testing found that direct Cloudflare AI Gateway custom-provider egress to `chatgpt.com`
+was rejected by the upstream Cloudflare edge. The custom provider therefore points to a dedicated
+Cloudflare Tunnel whose origin is a Bun relay in Kubernetes.
 
-Usage older than 60 seconds is stale but remains a fallback until 24 hours. Stale weekly headroom
-receives a five-point penalty.
+The relay:
 
-Eligible accounts are ordered by quota-expiry urgency:
+- exposes only `GET /backend-api/wham/usage`, `POST /backend-api/codex/responses`, and the synthetic
+  canary, with AI Gateway’s optional `/v1` prefix;
+- requires a dedicated `x-api-key` transport token on every non-health request;
+- requires subscription authorization and provider-account headers for real upstream requests;
+- strips Cloudflare, forwarding, relay-auth, hop-by-hop, compression, cookie, and origin-server
+  headers as appropriate;
+- uses fixed upstream URLs and manual redirects;
+- passes request and response bodies without reading them.
+
+The `x-api-key` is only relay transport authentication. It is not an OpenAI API key and is never
+sent to `chatgpt.com`.
+
+### Exact-byte SSE across AI Gateway
+
+The deployed synthetic fixture showed AI Gateway inserting random `nonce` properties into JSON SSE
+events, even with payload storage disabled. That violates byte transparency.
+
+The relay now changes only transport metadata:
+
+1. upstream `text/event-stream` is carried through AI Gateway as `application/octet-stream`;
+2. a controlled `x-codex-upstream-content-type: text/event-stream` marker is added;
+3. the Worker removes the marker and restores `text/event-stream`;
+4. neither component reads, parses, clones, tees, hashes, or reserializes the body.
+
+The deployed canary proves the final 62 bytes are identical and arrive incrementally.
+
+## Request lifecycle
+
+```text
+authenticate
+  -> validate method/path/session
+  -> maintain selected account enough for a usable credential + quota
+  -> atomic acquire(account, lease, optional sticky assignment)
+  -> fetch encrypted selected credential and decrypt in Worker
+  -> strip caller/provider/hop headers
+  -> one AI Gateway request
+  -> record response classification for the same credential generation
+  -> stream bytes to caller
+  -> renew at most once per elapsed 40 seconds
+  -> release on end, empty body, cancellation, read error, or transport failure
+```
+
+Bookkeeping failure never replaces a real upstream response.
+
+The body contract forbids `text()`, `json()`, `arrayBuffer()`, `clone()`, and `tee()` on model
+requests and responses. The synthetic test tools may consume the controlled fixture at the client
+boundary; production forwarding may not.
+
+## Quota and selection
+
+A candidate is rejected when it is disabled, requires reauthentication, has an active quota or
+transient block, lacks usage, has usage older than 24 hours, has no future weekly reset, or has less
+than 10% short-window / 3% weekly headroom.
+
+Usage older than 60 seconds is a penalized fallback until the 24-hour cutoff. A provider response
+with only a known seven-day window is valid: its short window is modeled as unused with no reset,
+while the weekly window remains authoritative.
+
+Eligible accounts are ranked by quota-expiry urgency:
 
 ```text
 weekly remaining percent / max(0.25, hours until weekly reset)
 ```
 
-This deliberately spends quota most at risk of expiring unused. A seven-day session assignment stays
-on its current eligible account when its score is within 10% of the best candidate. Final ties use
-weekly headroom, short-window headroom, active reservations, and opaque account ID.
+Quota most at risk of expiring unused is preferred. A seven-day sticky assignment remains when its
+account is within 10% of the best score. Final ties use weekly headroom, short headroom, active
+reservations, then opaque account ID.
 
-Anonymous traffic is balanced but not assigned. Per-request round robin would destroy cache locality
-and continuity, so it is not used.
+Anonymous traffic is balanced but never assigned using inferred identity.
 
-## State
+## Generation-safe credential lifecycle
 
-An atomic acquisition:
+Every subscription credential has a monotonically increasing router generation.
 
-1. removes expired assignments and leases;
-2. overlays recorded upstream health onto candidates;
-3. selects with current active reservations;
-4. inserts a 120-second lease;
-5. upserts a seven-day assignment when an explicit session exists.
+- Refresh and usage work uses per-account, per-operation claims with expiry.
+- A refresh commit succeeds only if the claim, expected generation, and replacement generation all
+  match.
+- Provider identity extracted from the new access token must equal the stored identity.
+- A usage result commits only for the generation that produced it.
+- A 401 marks reauthentication only if that rejected generation is still current.
+- A late rejection, quota response, or refresh result from generation N cannot invalidate generation
+  N+1.
 
-Response status changes health:
+OAuth refresh starts five minutes before expiry. Invalid-grant or provider-identity mismatch marks
+the matching generation for reauthentication. Transient control-plane failures retain usable stale
+usage within the 24-hour bound.
 
-| Status    | Classification | State effect                                      |
-| --------- | -------------- | ------------------------------------------------- |
-| 2xx–3xx   | success        | clear transient health evidence                   |
-| 401       | reauth         | mark account as requiring reauthentication        |
-| 429       | quota          | quota block, using valid `Retry-After` when given |
-| 403       | forbidden      | policy/workspace/origin evidence                  |
-| 404       | not found      | model/account availability evidence               |
-| other 4xx | client error   | do not punish the account as a provider failure   |
-| 5xx       | transient      | temporary block evidence                          |
+Workers run maintenance every minute with a cron trigger. Bun runs the same portable
+`SubscriptionRouter.maintain` operation using `Schedule.spaced("1 minute")`.
 
-`Retry-After` may be numeric seconds or an HTTP date. It is response cooldown evidence, not a
-replacement for live quota-window reset data.
+## State implementations
 
-### Bun state
+### Cloudflare
 
-The Bun adapter uses native SQLite and `BEGIN IMMEDIATE`. It is suitable for one process or one
-Kubernetes replica with one persistent SQLite file. A shared multi-writer filesystem does not
-provide the required database semantics.
+One SQLite Durable Object owns account state, encrypted credential records, usage snapshots, refresh
+claims, routing health, leases, and sticky assignments. AES-256-GCM uses a random 96-bit nonce,
+explicit key version, and opaque account ID as additional authenticated data.
 
-### Cloudflare state
+Keyrings allow old and current key versions simultaneously. Online rotation rewrites and verifies
+records before an old key is retired.
 
-The Worker uses one SQLite Durable Object named `global`. It receives small internal HTTP RPCs for
-acquire, renew, record, release, summary, and encrypted credential vault operations. The public
-request body and upstream response never cross the object boundary.
+### Bun / AgentOS
 
-Workers KV is not a substitute because assignment and lease changes require atomic read-modify-
-write behavior.
+Native SQLite uses `BEGIN IMMEDIATE` for the same atomic contracts. Bootstrap accounts seed only
+missing records; routine lifecycle uses the admin API and persisted database.
+
+One normal SQLite file means one Bun writer replica. Multi-replica AgentOS deployment requires a
+different adapter with equivalent transaction semantics.
+
+## Response classification
+
+| Status    | Classification | Effect on matching credential generation               |
+| --------- | -------------- | ------------------------------------------------------ |
+| 2xx–3xx   | success        | clear transient evidence                               |
+| 401       | reauth         | require reauthentication only if generation is current |
+| 429       | quota          | temporary quota block; honor valid `Retry-After`       |
+| 403       | forbidden      | policy/workspace/origin evidence                       |
+| 404       | not found      | model/account availability evidence                    |
+| other 4xx | client error   | do not punish the account as an upstream failure       |
+| 5xx       | transient      | temporary block evidence                               |
+
+`Retry-After` is cooldown evidence, not a replacement for live provider quota windows.
 
 ## Protocol mapping
 
-Five incoming paths are recognized:
+All five incoming model paths map to `https://chatgpt.com/backend-api/codex/responses`:
 
-| Incoming path           | API-key upstream        | Subscription upstream          |
-| ----------------------- | ----------------------- | ------------------------------ |
-| `/responses`            | `/v1/responses`         | `/backend-api/codex/responses` |
-| `/v1/responses`         | `/v1/responses`         | `/backend-api/codex/responses` |
-| `/codex/responses`      | `/v1/responses`         | `/backend-api/codex/responses` |
-| `/responses/compact`    | `/v1/responses/compact` | `/backend-api/codex/responses` |
-| `/v1/responses/compact` | `/v1/responses/compact` | `/backend-api/codex/responses` |
+- `/responses`
+- `/v1/responses`
+- `/codex/responses`
+- `/responses/compact`
+- `/v1/responses/compact`
 
-Native subscription compaction data is forwarded opaquely. WebSocket transport is outside the
-initial contract.
-
-## Cloudflare AI Gateway transport
-
-API-key accounts use AI Gateway’s built-in OpenAI provider path. Subscription accounts use a custom
-provider with the root `https://chatgpt.com`, allowing the provider-specific endpoint to append
-`/backend-api/codex/responses` without translating the body.
-
-Each request forces:
-
-- cache off;
-- payload storage off;
-- maximum attempts equal to one;
-- a Worker-held AI Gateway Run token;
-- no more than five bounded metadata values.
-
-AI Gateway `/compat`, semantic routing, Dynamic Routing, DLP, and response parsing are outside this
-flow. Cloudflare documents the custom-provider URL mapping in
-[Custom Providers](https://developers.cloudflare.com/ai-gateway/configuration/custom-providers/).
-
-## Current gap and intended next slice
-
-The next production slice is a live `UsageProbe` cache and an OAuth refresh coordinator based on the
-existing AgentOS implementation:
-
-- refresh usage no more than once per account per 60 seconds;
-- preserve the last valid snapshot with a maximum age of 24 hours;
-- lock refresh per account;
-- bind rejected responses to the credential generation that produced them;
-- verify provider identity before replacing credential material;
-- persist encrypted refresh material only in runtime adapters;
-- expose no refresh material to `core`, candidates, status, or telemetry.
-
-That slice must preserve the current portable service boundary instead of embedding Worker or
-Kubernetes behavior in the policy.
+Native compaction payloads are opaque. HTTP/SSE is supported; WebSocket behavior is not claimed.

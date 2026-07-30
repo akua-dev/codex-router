@@ -1,171 +1,266 @@
 # Security
 
-## Security posture
+## Posture
 
-The router is a privileged credential multiplexer. Its most important properties are:
+The router is a privileged ChatGPT subscription credential multiplexer. Its security invariants are:
 
-1. authenticate the caller before accessing the body;
-2. expose no upstream credential or provider identity;
-3. transmit a model request once;
-4. persist no model payload;
-5. keep account selection and credential lookup separate;
-6. fail closed when configuration or routing state is invalid.
+1. authenticate before touching a model body;
+2. keep client, admin, relay, gateway, tunnel, and upstream credentials separate;
+3. expose no upstream credential or provider identity;
+4. send each model request once;
+5. persist no model payload;
+6. bind every response/refresh/usage mutation to the credential generation that produced it;
+7. fail closed when configuration, state, identity, or decryption is invalid.
 
-The current subscription adapter is experimental. Security controls do not make an unsupported
-provider workflow supported; an explicit OpenAI terms, privacy, and organization-policy review is a
-separate release gate.
+These controls do not decide whether multi-account ChatGPT OAuth pooling is permitted. Terms,
+privacy, account ownership, and organization-policy review remain an independent requirement.
 
 ## Assets
 
 - router client token;
-- OpenAI API keys or experimental subscription access credentials;
-- provider account identity associated with a subscription credential;
-- Cloudflare AI Gateway Run token;
-- AES-GCM credential-encryption key;
-- session-to-account assignments;
-- account usage and health state;
-- user prompts, tool inputs, model output, and compaction artifacts in transit.
+- router admin/internal token;
+- relay transport token;
+- subscription access and refresh tokens;
+- provider account identity embedded in subscription credentials;
+- AI Gateway Run token;
+- Cloudflare Tunnel token;
+- AES-GCM credential-encryption keyring;
+- Kubernetes registry pull credential;
+- account usage, health, generation, refresh-claim, assignment, and lease state;
+- prompts, tool inputs, model output, reasoning, and compaction artifacts in transit.
 
-Opaque router account IDs are operational metadata, not credentials, but they should not be joinable
-to human identities in ordinary logs.
+Opaque router account IDs are operational metadata. They should not be joined to human identity in
+routine logs.
 
 ## Trust boundaries
 
 ```text
-caller -- untrusted network --> Worker/Bun ingress
-router -- selected secret ---> AI Gateway or upstream provider
-Worker -- small internal RPC -> Durable Object
-operator -- secret channel --> runtime bindings
+caller -- public network + router token --> Worker/Bun ingress
+operator -- separate admin token --------> account administration
+Worker -- internal token + small RPC ----> Durable Object
+Worker -- run token + relay token -------> AI Gateway
+AI Gateway -- relay token + Tunnel ------> Bun relay
+relay -- selected subscription secret ---> chatgpt.com
+operator/automation -- secret channel ---> runtime bindings and Kubernetes Secrets
 ```
 
-Cloudflare AI Gateway and the upstream provider can observe traffic they forward. The application
-database and Durable Object cannot.
+Cloudflare AI Gateway and the upstream provider necessarily observe the traffic they forward. The
+Durable Object, routing SQLite tables, application logs, and Git repository must not.
 
-## Implemented controls
+## Ingress controls
 
-### Ingress
+- Model callers use `x-ai-router-token` or bearer authorization.
+- Admin callers use only `x-ai-router-admin-token`.
+- Client/admin/relay tokens must be pairwise distinct.
+- Bun compares equal-length values with `timingSafeEqual`.
+- Workers and the relay compare SHA-256 digests with constant-time accumulation.
+- Authentication happens before model request-body access.
+- Method and route validation happens before account acquisition.
+- Explicit session values must be non-empty and at most 256 characters.
+- `/healthz` exposes liveness only.
+- `/status` requires client authentication and returns sanitized counts/state.
+- Admin inputs have a 16 KiB content-length bound and Schema decoding.
+- Imported access tokens are decoded enough to derive provider identity; caller-supplied provider
+  identity is not trusted.
 
-- The caller supplies either a dedicated router-token header or bearer authorization.
-- Bun compares equal-length tokens with `timingSafeEqual`.
-- Workers compare SHA-256 digests with a constant-time accumulation.
-- Authentication happens before request-body access.
-- Unsupported methods and paths are rejected.
-- Explicit session values are non-empty and at most 256 characters.
-- `/status` requires the same authentication and returns only sanitized counts.
-- `/healthz` reports liveness only and reveals no account state.
+The current Cloudflare Access applications use bypass policies so the Codex client and custom
+provider can reach their domains. Application-layer authentication is therefore mandatory, not
+defense in depth.
 
-### Request forwarding
+## Model forwarding controls
 
-Caller-supplied provider credentials, proxy credentials, provider account identity, router auth,
-session routing headers, host, content length, and hop-by-hop headers are removed. Only the selected
-credential is added. The request body is not cloned, buffered, logged, hashed, parsed, or retried.
+Before upstream transmission, the router removes:
 
-### Response forwarding
+- caller authorization and API-key variants;
+- provider-account identity;
+- router auth and session-routing headers;
+- host and content length;
+- Cloudflare/forwarding headers at the relay;
+- hop-by-hop headers.
 
-The router preserves status, status text, safe headers, order, and byte chunks. Headers that become
-invalid when a runtime decodes or reframes a stream are removed. No retry is attempted after the
-single transport call, whether or not response bytes have started.
+It injects only the selected subscription authorization and matching provider account identity. It
+does not clone, buffer, log, hash, parse, or retry the model body.
 
-### Credential storage
+The relay accepts only fixed Codex usage/Responses paths. Its `x-api-key` is a dedicated internal
+transport credential. The relay strips it before reaching `chatgpt.com`; it is not an OpenAI API
+credential.
 
-The Bun runtime keeps bootstrap credentials in process memory and secret configuration. Its SQLite
-database contains routing state, not credentials.
+The response wrapper removes headers invalidated by runtime decoding/reframing and otherwise
+preserves status, status text, safe headers, order, and bytes. No fallback/retry follows the single
+transport call.
 
-The Cloudflare runtime writes credential bundles to the Durable Object only as AES-256-GCM
-ciphertext:
+## Generation safety
 
-- 256-bit key decoded from base64url;
-- independent 96-bit random nonce;
-- explicit key version;
+Credential generation is part of every security-sensitive state transition:
+
+- refresh claims carry the expected generation;
+- replacement credentials must advance by exactly one generation;
+- replacement provider identity must match;
+- usage claims and commits carry the generating credential version;
+- 401 reauthentication marks only the still-current rejected generation;
+- late failures from an older stream cannot invalidate a newer login/refresh;
+- replacing or removing an account clears incompatible claims and state.
+
+Claims expire after 30 seconds. Lease expiry and assignment cleanup are performed in atomic state
+operations.
+
+## Credential storage
+
+### Cloudflare
+
+Subscription credentials cross the Worker-to-Durable-Object boundary only inside an AES-256-GCM
+envelope:
+
+- 32-byte key;
+- independent random 96-bit nonce;
+- explicit immutable key version;
 - opaque account ID as additional authenticated data;
-- authenticated decryption before Schema decoding.
+- credential generation authenticated inside the encrypted model;
+- Schema decoding after authenticated decryption.
 
-A wrong key, nonce, key version, ciphertext, or account ID fails decryption. The unencrypted bundle
-is returned only to the Worker instance that requested the selected account.
+The Durable Object stores key version, nonce, and ciphertext. The Worker decrypts only the selected
+credential. A wrong key/version/nonce/ciphertext/account ID fails closed.
 
-### AI Gateway privacy
+The multi-version keyring supports online rotation. Decrypting an old-version record rewrites it
+with a fresh nonce under the current key. `GET /admin/key-versions` exposes only ciphertext counts,
+not key material.
 
-Every transport call sends:
+### Bun
+
+The Bun SQLite adapter persists subscription access and refresh tokens in its account rows so OAuth
+refresh survives restart. Unlike the Cloudflare vault, that payload is not application-level
+encrypted.
+
+Required compensating controls:
+
+- encrypted node/PVC storage;
+- namespace and filesystem access restricted to the router process;
+- encrypted, access-controlled backups;
+- no shared multi-writer PVC;
+- no database copy in bug reports or build artifacts;
+- an external secret/vault adapter before deployment into an environment that requires
+  application-level envelope encryption.
+
+Bootstrap account JSON also contains credentials. Prefer authenticated device login after initial
+deployment and remove bootstrap values when operationally possible.
+
+## AI Gateway privacy and transparency
+
+Every model and usage call through AI Gateway sets:
 
 - `cf-aig-collect-log-payload: false`;
 - `cf-aig-skip-cache: true`;
 - `cf-aig-max-attempts: 1`;
-- `cf-aig-authorization` from the Worker secret.
+- `cf-aig-authorization` from the Worker secret;
+- at most five bounded, non-sensitive metadata values.
 
-Cloudflare states that payload suppression keeps metadata logs but skips raw request and response
-bodies; see
-[AI Gateway logging](https://developers.cloudflare.com/ai-gateway/observability/logging/). After
-deployment, verify the dashboard because gateway-level configuration can change independently of
-this repository.
+The deployed canaries confirmed stored request, response, and prompt lengths are all zero.
 
-Metadata is bounded to five entries, small encoded size, and short keys. It must not include session
-identifiers, prompt-derived values, upstream credentials, provider identity, human identity, or full
-URLs.
+Request and response DLP are disabled. Response DLP would buffer the stream; request DLP conflicts
+with the no-inspection boundary. AI Gateway Dynamic Routing and `/compat` do not participate in
+subscription account selection.
+
+AI Gateway was observed mutating JSON SSE by inserting `nonce` values. Carrying SSE as opaque binary
+through the gateway and restoring only the content type at the Worker prevents that mutation without
+reading the body. Do not remove this encapsulation while the behavior remains.
+
+Gateway logs are configured to delete oldest entries at the storage limit. Metadata retention is
+short and is not an audit archive.
 
 ## Prohibited data sinks
 
-Never put model content or credentials in:
+Never put credentials or model content in:
 
-- Durable Object routing RPCs;
-- SQLite routing tables;
-- Worker logs, Bun logs, errors, or status responses;
+- routing or account summaries;
+- Durable Object routing RPC payloads outside encrypted credential envelopes;
+- assignment, reservation, block, or usage metadata;
+- Worker, Bun, relay, tunnel, or Kubernetes logs;
 - AI Gateway custom metadata;
-- tracing span names or attributes;
-- metrics labels;
-- URLs or query strings;
-- crash reports or test snapshots.
+- tracing names/attributes or metrics labels;
+- URLs, query strings, error messages, crash reports, test snapshots, or tickets.
 
-Never log full request or response headers. In particular, authorization, API-key variants,
-provider-account identity, cookies, and refresh material are sensitive.
+Never log full request/response headers. Sensitive names include `authorization`, `api-key`,
+`x-api-key`, `x-ai-router-token`, `x-ai-router-admin-token`, `chatgpt-account-id`, cookies,
+Cloudflare authorization, refresh material, and forwarded identity.
 
-## Key rotation
+Do not run a full-header live tail during account import, quota probes, or model canaries.
 
-For the Worker vault:
+## Rotation
 
-1. create a new random 256-bit key under a new key version;
-2. make the application capable of decrypting the old and new versions;
-3. make the new version current for writes;
-4. re-encrypt every bundle with a fresh nonce and the same account-ID AAD;
-5. read and verify every rewritten bundle;
-6. retire the old version only after verification and rollback-window approval.
+### Credential-encryption keyring
 
-The current bootstrap exposes one configured key version. A multi-version rotation workflow must
-land before unattended production rotation; replacing the only key makes existing ciphertext
-unreadable.
+1. generate a new random 32-byte key with a new version;
+2. retain old and new versions in the keyring;
+3. make the new version current and deploy;
+4. exercise every enabled account through maintenance/traffic;
+5. explicitly handle disabled accounts;
+6. verify old-version count is zero through the admin endpoint;
+7. retain the old key for the approved rollback window;
+8. retire it and redeploy.
 
-Router client tokens and AI Gateway Run tokens should be rotated independently. During a controlled
-overlap, accept both client-token generations at the ingress adapter, remove the old generation
-after clients migrate, and verify rejected traffic. This overlap is not implemented in the current
-single-token configuration.
+Never reuse a version with different bytes or remove a key with nonzero ciphertext count.
 
-## Known gaps
+### Other credentials
 
-- No automated acquisition or refresh of subscription OAuth credentials.
-- No generation-safe protection against an old in-flight 401 invalidating a newly rotated token.
-- No live quota refresh; stale bootstrap data can cause availability loss or poor selection.
-- No deployed Worker CPU/SSE canary.
-- No external secret-manager adapter for the Bun runtime.
-- No audit-log export or automated AI Gateway log-retention policy.
-- No WebSocket protocol support or validation.
-- No multi-region/multi-replica Bun state implementation.
+Rotate independently:
 
-Until these gaps are closed, use only controlled development traffic and manually maintained
-credentials.
+- client token;
+- admin/internal token;
+- relay token in Worker and Kubernetes Secret;
+- AI Gateway Run token;
+- Tunnel token;
+- registry pull token;
+- subscription credentials through device login or refresh.
+
+The client/admin ingress currently has no two-token overlap window. Coordinate consumers and deploy
+atomically enough for the accepted interruption. Relay rotation requires both ends to overlap or a
+brief controlled outage.
+
+## Kubernetes relay hardening
+
+The committed deployment:
+
+- runs both containers as non-root UID/GID 1000;
+- disables service-account token automount;
+- uses read-only root filesystems;
+- drops all capabilities and forbids privilege escalation;
+- pins image digests;
+- sets resource requests/limits;
+- denies all ingress;
+- permits only DNS plus TCP 443/7844 egress.
+
+The tunnel terminates at loopback in the same Pod, so a Kubernetes Service is unnecessary. Keep the
+relay package private unless distribution requirements change. Prefer a narrowly scoped,
+read-package-only GHCR credential and rotate any broad bootstrap credential used during setup.
+
+## Residual risks and limitations
+
+- The provider’s private subscription endpoints and response shapes can change without public API
+  stability guarantees.
+- OpenAI may restrict account pooling independently of technical correctness.
+- Bun credential rows lack application-level encryption.
+- Client/admin token rotation lacks a dual-generation overlap mode.
+- AI Gateway metadata retention is delete-oldest rather than durable audit export.
+- No WebSocket support or deployed WebSocket canary exists.
+- No multi-region or multi-writer Bun state adapter exists.
+- Cloudflare analytics is aggregated and can be sampled; it is not a per-request security ledger.
+- The fixed relay adds a Kubernetes/tunnel dependency and its own availability surface.
+
+These are explicit operating constraints, not reasons to add API-key mode or body inspection.
 
 ## Incident response
 
 If a credential or router token may be exposed:
 
-1. remove public traffic or require an unaffected ingress token;
-2. revoke the suspected upstream and AI Gateway credentials at their issuers;
-3. rotate the vault key if ciphertext or the key may have leaked;
-4. replace runtime bindings through the secret channel;
-5. inspect only metadata logs for unexpected account IDs, statuses, rates, and source controls;
-6. do not copy payloads or secret headers into an incident ticket;
-7. invalidate assignments and health state if account ownership changed;
-8. deploy and run authentication, byte-stream, and privacy canaries;
+1. stop or restrict new traffic at the relevant ingress;
+2. revoke/rotate the affected subscription, gateway, relay, tunnel, registry, or router credential;
+3. retain every old AES key needed to read unaffected ciphertext during recovery;
+4. replace runtime bindings through secret channels;
+5. inspect only sanitized metadata, generation, status, and rate evidence;
+6. never copy payloads or full headers into incident tooling;
+7. remove incompatible assignments/health if account ownership changed;
+8. redeploy and run authentication, live usage, exact-byte SSE, privacy, and one-send checks;
 9. document scope, exposure window, affected generations, and prevention work.
 
-If AI Gateway payload logging was accidentally enabled, follow the configured deletion/export
-controls immediately and involve the data owner. Treat cached model responses as payload exposure
-and purge them.
+If payload logging or cache was accidentally enabled, treat stored/cached model content as exposure,
+delete/purge it through Cloudflare controls, and involve the data owner.

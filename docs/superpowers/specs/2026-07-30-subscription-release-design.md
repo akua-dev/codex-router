@@ -2,7 +2,13 @@
 
 **Date:** 2026-07-30
 
-**Status:** Approved for implementation
+**Status:** Implemented and deployed; retained as the approved design record
+
+**Deployment addendum:** The final custom provider targets an authenticated Cloudflare Tunnel to the
+fixed-route Bun relay because direct AI Gateway egress to `chatgpt.com` was rejected. The relay
+encapsulates SSE as opaque binary across AI Gateway to prevent observed nonce mutation. The current
+architecture, operations, security, and measured evidence documents supersede this record where
+deployment discoveries required an adapter.
 
 ## Outcome
 

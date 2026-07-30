@@ -1,5 +1,11 @@
 # Subscription-Only Release Implementation Plan
 
+**Status:** Implemented and deployed; retained as the test-first execution record.
+
+The final deployed relay and SSE-encapsulation adaptations are documented in `docs/architecture.md`
+and `docs/canary.md`; those measured records supersede prospective commands or assumptions in this
+historical plan.
+
 > **Execution rule:** Follow this plan test-first. Run each focused test once in red, implement the
 > smallest coherent behavior, rerun it in green, and commit the increment. Do not weaken an
 > assertion to make an implementation pass.

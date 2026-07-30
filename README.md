@@ -1,71 +1,86 @@
 # codex-router
 
-`codex-router` is an Effect-first, quota-aware load balancer for Codex Responses traffic. It keeps
-sessions sticky to healthy accounts, accounts for concurrent streams, forwards each request once,
-and preserves the upstream HTTP/SSE response. The same domain code runs on Cloudflare Workers or on
-Bun in a VM or Kubernetes cluster.
+`codex-router` is an Effect-first load balancer for Codex traffic backed by ChatGPT subscriptions.
+It selects from live short/weekly quota state, preserves session affinity, refreshes OAuth
+credentials safely, forwards every model request once, and streams the upstream response without
+inspecting its body.
 
-Cloudflare AI Gateway is an optional observability hop in the Worker runtime. It records bounded
-metadata while payload storage, caching, and retries are disabled for every request. It does not
-know ChatGPT subscription quota and does not choose the account.
+The routing core is runtime-neutral. The production composition runs on Cloudflare Workers with a
+SQLite Durable Object; the same services run on Bun with native SQLite for AgentOS, VMs, and
+Kubernetes.
 
-## Status
+This project is deliberately subscription-only. It does not accept OpenAI API keys, use API billing,
+or pretend that a ChatGPT plan creates a “Codex API key.”
 
-This repository is a tested foundation, not a production-ready subscription pool.
+## Current state
 
-Working now:
+Implemented and tested:
 
-- deterministic short-window and weekly-quota selection;
-- seven-day session affinity with 10% hysteresis;
-- atomic leases and response-health state in SQLite;
-- transparent HTTP and SSE forwarding for five observed Responses paths;
-- Cloudflare Worker plus SQLite Durable Object composition;
-- encrypted Worker credential persistence using AES-256-GCM;
-- portable Bun server composition for AgentOS and other Kubernetes deployments;
-- privacy-safe Cloudflare AI Gateway request metadata.
+- live Codex usage probing with 60-second freshness and 24-hour maximum age;
+- weekly-only and short-plus-weekly provider response shapes;
+- OAuth device login and refresh-token rotation;
+- generation-safe refresh claims, usage commits, and 401 handling;
+- atomic account selection, leases, health, and seven-day session affinity;
+- encrypted multi-version credential storage and online key rotation on Cloudflare;
+- authenticated account list/login/enable/disable/remove administration;
+- scheduled maintenance every minute on Workers and with an Effect schedule on Bun;
+- one-send opaque HTTP/SSE forwarding;
+- Cloudflare AI Gateway metadata logging with payloads, cache, and retries disabled;
+- a narrowly scoped Bun egress relay behind Cloudflare Tunnel;
+- byte-exact deployed synthetic SSE and minimal real Codex subscription canaries.
 
-Release blockers:
+The deployed path is operationally validated. The remaining non-code decision is organizational:
+multi-account ChatGPT OAuth pooling is not documented as an OpenAI public API workflow. Review
+applicable terms, privacy rules, account ownership, and organization policy before widening use.
 
-- the account snapshots in `CODEX_ROUTER_ACCOUNTS_JSON` are static at process/Worker bootstrap;
-- access-token refresh and generation-safe refresh locking are not implemented;
-- deployed Cloudflare CPU and byte-identical SSE canaries have not run;
-- multi-user ChatGPT OAuth pooling is not a documented OpenAI public API workflow and requires
-  terms, privacy, and organization-policy review.
+OpenAI documents that Codex is included with ChatGPT plans and that ChatGPT and API billing are
+separate:
 
-OpenAI documents that Codex is included with ChatGPT plans, but it also documents that API billing
-is separate from ChatGPT. There is no documented “Codex subscription API key.” Cloudflare’s official
-Codex integration uses AI Gateway Unified Billing, not a ChatGPT subscription. See
-[Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-chatgpt),
-[ChatGPT and API billing](https://help.openai.com/en/articles/8156019-is-api-usage-included-in-chatgpt-subscriptions-even-if-i-have-a-paid-chatgpt-account),
-and
-[Cloudflare’s Codex integration](https://developers.cloudflare.com/ai-gateway/integrations/coding-agents/openai-codex/).
+- [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-chatgpt)
+- [ChatGPT and API billing are separate](https://help.openai.com/en/articles/8156019-is-api-usage-included-in-chatgpt-subscriptions-even-if-i-have-a-paid-chatgpt-account)
 
-## Architecture
+## Production data path
 
 ```text
-Codex or Pi client
-        |
-        | authenticated Responses request
-        v
-portable Effect handler (packages/core + packages/codex)
-        |
-        +---- acquire / record / release ----> atomic RoutingState
-        |                                     Worker: SQLite Durable Object
-        |                                     Bun: native SQLite
-        |
-        +---- selected credential -----------> runtime credential adapter
-        |
-        +---- one opaque streaming fetch ----> Cloudflare AI Gateway ----> upstream
-                                               metadata only
+Codex / Pi
+    |
+    | x-ai-router-token
+    v
+Cloudflare Worker
+    |
+    +-- acquire + encrypted credential --> SQLite Durable Object
+    |
+    +-- one opaque request -------------> Cloudflare AI Gateway
+                                              |
+                                              | metadata log only
+                                              v
+                                      custom provider
+                                              |
+                                              v
+                                      Cloudflare Tunnel
+                                              |
+                                              v
+                                      Bun egress relay
+                                              |
+                                              v
+                               chatgpt.com/backend-api/codex/responses
 ```
 
-Model request and response bodies never enter the Durable Object, the routing database, or
-application logs. `packages/core` and `packages/codex` contain no Bun, Node, Wrangler, or Cloudflare
-imports.
+Cloudflare’s direct AI Gateway egress to `chatgpt.com` was rejected by the upstream edge during
+deployment testing. The relay therefore provides a stable non-Worker egress point. It accepts only
+the Codex Responses and usage paths, authenticates the gateway-to-relay hop with a distinct
+transport token, strips Cloudflare and forwarding headers, and never selects accounts.
 
-## Supported routes
+AI Gateway was also observed adding `nonce` fields to JSON SSE events. The relay labels SSE as
+`application/octet-stream` across that hop and the Worker restores `text/event-stream` from a
+controlled response header. The model body remains unread and byte-exact.
 
-The router accepts `POST` on:
+See [architecture](docs/architecture.md), [operations](docs/operations.md),
+[canary evidence](docs/canary.md), and [security](docs/security.md).
+
+## Routes
+
+Authenticated model `POST` routes:
 
 - `/responses`
 - `/v1/responses`
@@ -73,120 +88,145 @@ The router accepts `POST` on:
 - `/responses/compact`
 - `/v1/responses/compact`
 
-It also exposes:
+Operational routes:
 
-- `GET /healthz`, unauthenticated liveness only;
-- `GET /status`, authenticated routing counts and sanitized account health.
+- `GET /healthz` — unauthenticated liveness only;
+- `GET /status` — client-authenticated sanitized routing state;
+- `GET /admin/accounts` — admin-authenticated account summaries;
+- `PUT /admin/accounts/:accountId/credential` — import/replace one subscription credential;
+- `POST /admin/accounts/:accountId/enabled` — enable or disable an account;
+- `DELETE /admin/accounts/:accountId` — remove an account;
+- `GET /admin/key-versions` — encrypted-record counts by key version;
+- `GET /admin/canary/sse` — admin-authenticated deployed streaming canary.
 
-Authenticate with `x-ai-router-token` or `Authorization: Bearer …`. Explicit session identifiers are
-read from known Codex or gateway session headers; anonymous requests are not made sticky from IP
-addresses, user agents, credentials, or prompt contents.
+Use `x-ai-router-token` or bearer authorization for model traffic. Admin routes require the distinct
+`x-ai-router-admin-token`. Explicit supported session headers drive affinity; the router never
+derives a session from IP addresses, user agents, credentials, or prompt content.
 
-The initial contract is HTTP only. WebSocket routing is intentionally not advertised.
+HTTP/SSE is the compatibility contract. WebSocket routing is not advertised.
 
-## Account configuration
+## Install and verify
 
-Both runtimes decode `CODEX_ROUTER_ACCOUNTS_JSON` as a non-empty JSON array. Each item has:
+Requirements:
 
-| Field               | Type                                     | Meaning                                   |
-| ------------------- | ---------------------------------------- | ----------------------------------------- |
-| `accountId`         | string                                   | Opaque router-local identity              |
-| `kind`              | `codex_subscription` or `openai_api_key` | Upstream credential adapter               |
-| `accessToken`       | string                                   | Secret credential material                |
-| `providerAccountId` | optional string                          | Provider identity required by the adapter |
-| `observedAt`        | Unix epoch milliseconds                  | Time of the quota observation             |
-| `shortUsedPercent`  | number                                   | Used percentage in the short window       |
-| `shortResetAt`      | Unix epoch milliseconds                  | Short-window reset                        |
-| `weeklyUsedPercent` | number                                   | Used percentage in the weekly window      |
-| `weeklyResetAt`     | Unix epoch milliseconds                  | Weekly reset                              |
-
-Build this JSON out of band in a secret manager. Do not commit it. Until live quota refresh lands,
-replace and restart before snapshots reach 24 hours old; data older than 60 seconds is already
-treated as a penalized fallback.
-
-## Run with Bun
-
-Requirements are Bun and a secret source that can populate the required environment:
+- Bun;
+- `kubectl` for the relay manifest test;
+- Wrangler for the Worker build/deploy commands.
 
 ```bash
 bun install --frozen-lockfile
 bun run check
+```
+
+The gate checks formatting, lint, types, all tests, and a Wrangler deployment dry run.
+
+## Run on Bun
+
+Required:
+
+- `CODEX_ROUTER_CLIENT_TOKEN`
+- `CODEX_ROUTER_ADMIN_TOKEN`
+
+Optional:
+
+- `CODEX_ROUTER_ACCOUNTS_JSON` — bootstrap-only subscription credentials and usage; defaults to
+  `[]`;
+- `CODEX_ROUTER_DATABASE_PATH` — defaults to `./data/codex-router.sqlite`;
+- `HOST` — defaults to `0.0.0.0`;
+- `PORT` — defaults to `8787`.
+
+The client and admin tokens must differ. Start the server:
+
+```bash
 bun run start:bun
 ```
 
-Required environment:
+Native SQLite supports one writer process per database file. Do not mount one ordinary SQLite PVC
+read-write from multiple Kubernetes replicas.
 
-- `CODEX_ROUTER_CLIENT_TOKEN`
-- `CODEX_ROUTER_ACCOUNTS_JSON`
+Account administration uses the same client against Bun or Workers:
 
-Optional environment:
+```bash
+export CODEX_ROUTER_ADMIN_URL=https://router.example
+export CODEX_ROUTER_ADMIN_TOKEN=stored-outside-shell-history
 
-- `CODEX_ROUTER_DATABASE_PATH`, default `./data/codex-router.sqlite`
-- `HOST`, default `0.0.0.0`
-- `PORT`, default `8787`
+bun run admin:bun list
+bun run admin:bun login primary
+bun run admin:bun disable primary
+bun run admin:bun enable primary
+bun run admin:bun remove primary
+```
 
-Use one Bun replica per SQLite file. A normal Kubernetes SQLite PVC is not a shared multi-writer
-database.
+`login` runs OpenAI’s device authorization flow locally and sends the resulting credential only to
+the authenticated router admin endpoint.
 
 ## Run on Cloudflare
 
-Create an AI Gateway and, for experimental subscription traffic, a custom provider whose base URL is
-`https://chatgpt.com`. Cloudflare requires the `custom-` prefix at request time; configure
-`CF_AIG_CUSTOM_PROVIDER_SLUG` without that prefix. The implementation uses the provider-specific
-endpoint because the Codex backend path is not the OpenAI-compatible chat-completions shape.
+The Worker requires:
 
-Set bindings through Wrangler’s interactive secret command so values do not enter shell history:
+- `CODEX_ROUTER_CLIENT_TOKEN`
+- `CODEX_ROUTER_ADMIN_TOKEN`
+- `CODEX_ROUTER_RELAY_TOKEN`
+- `CODEX_ROUTER_CREDENTIAL_KEYS_JSON`
+- `CF_AIG_ACCOUNT_ID`
+- `CF_AIG_GATEWAY_ID`
+- `CF_AIG_CUSTOM_PROVIDER_SLUG`
+- `CF_AIG_TOKEN`
 
-```bash
-bunx wrangler secret put CODEX_ROUTER_CLIENT_TOKEN --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CODEX_ROUTER_ACCOUNTS_JSON --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CF_AIG_ACCOUNT_ID --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CF_AIG_GATEWAY_ID --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CF_AIG_CUSTOM_PROVIDER_SLUG --config apps/worker/wrangler.jsonc
-bunx wrangler secret put CF_AIG_TOKEN --config apps/worker/wrangler.jsonc
-openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n' | bunx wrangler secret put CODEX_ROUTER_CREDENTIAL_KEY --config apps/worker/wrangler.jsonc
+`CODEX_ROUTER_ACCOUNTS_JSON` is optional bootstrap input. Routine account lifecycle goes through the
+admin API and encrypted Durable Object vault.
+
+`CODEX_ROUTER_CREDENTIAL_KEYS_JSON` has this shape:
+
+```json
+{
+  "currentVersion": "v2",
+  "keys": {
+    "v1": "base64url-encoded-32-byte-key",
+    "v2": "base64url-encoded-32-byte-key"
+  }
+}
 ```
 
-Then:
+Every client/admin/relay token must be distinct. Enter secrets through Wrangler stdin or another
+secret channel; do not commit them or place values in command history.
+
+The AI Gateway custom provider must point at the authenticated tunnel relay, not directly at
+`chatgpt.com`. Keep static provider headers empty. The Worker supplies the relay token per request
+and forces payload logging off, cache bypass, and one attempt.
 
 ```bash
-bun run dev:worker
-bun run build:worker
 bun run deploy:worker
 ```
 
-The checked-in Wrangler configuration creates one SQLite Durable Object class and names the
-coordination object `global`. Read the deployed-canary requirements in
-[`docs/operations.md`](docs/operations.md) before directing real model traffic to it.
+Relay manifests live under `deploy/kubernetes/relay`. The committed resources intentionally exclude
+Secret, Registry Secret, Service, and Ingress objects; the deployment consumes externally managed
+`codex-router-egress` and `codex-router-ghcr` secrets and uses a remotely configured Cloudflare
+Tunnel sidecar.
 
 ## Packages
 
-- `@akua-dev/codex-router-core`: domain schemas, selection, state port, response classification;
-- `@akua-dev/codex-router-codex`: protocol, auth/session logic, ports, transparent handler;
-- `@akua-dev/codex-router-bun`: native SQLite and Bun runtime layers;
-- `@akua-dev/codex-router-cloudflare`: Durable Object, encrypted vault, AI Gateway transport;
-- `apps/server`: Bun composition root;
-- `apps/worker`: Cloudflare composition root.
+- `@akua-dev/codex-router-core` — quota policy, state models, selection, classifications;
+- `@akua-dev/codex-router-codex` — OAuth, usage, account lifecycle, protocol, opaque handler;
+- `@akua-dev/codex-router-bun` — native SQLite, scheduled maintenance, Bun server/admin client;
+- `@akua-dev/codex-router-cloudflare` — Durable Object, vault, Worker, AI Gateway adapters;
+- `@akua-dev/codex-router-relay` — authenticated fixed-route Bun egress relay;
+- `apps/server`, `apps/worker`, `apps/relay` — runtime composition roots.
 
-The official Effect agent skill is vendored in `.agents/skills/effect-ts`, and the matching Effect
-source is pinned as `.repos/effect`. Read [`AGENTS.md`](AGENTS.md) before modifying the project.
+The official Effect agent skill is vendored at `.agents/skills/effect-ts`; the matching source
+checkout is pinned at `.repos/effect`. Read [AGENTS.md](AGENTS.md) before changing the repository.
 
-## Verification
+## Capacity summary
 
-```bash
-bun run check
-git diff --check
-```
+The reconstructed lower bound is 586,932 completed calls, with a recent average of 11,670/day and an
+observed peak of 24,657/day, 117/minute, and 9/second.
 
-The gate formats, lints, type-checks, runs the Effect/Vitest suites, and performs a Wrangler
-deployment dry run.
-
-## Documentation
-
-- [`docs/architecture.md`](docs/architecture.md) — dependency direction, data flow, and invariants
-- [`docs/operations.md`](docs/operations.md) — deployment, capacity, canary, backup, and rollback
-- [`docs/research.md`](docs/research.md) — verified alternatives, request audit, and platform limits
-- [`docs/security.md`](docs/security.md) — threat model, controls, gaps, and incident handling
+Request volume fits the 100,000/day Workers Free request allowance. A normal completed model stream
+uses three Durable Object requests, so the observed peak projects to 73,971/day before renewals and
+the minute cron. However, deployed telemetry observed Worker CPU above the Free plan’s 10 ms
+per-invocation allowance. Treat Workers Paid as the safe deployment target unless a newer,
+representative CPU canary proves otherwise. Full calculations and missing-data caveats are in
+[operations](docs/operations.md).
 
 ## License
 
