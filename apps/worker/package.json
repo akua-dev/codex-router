@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@akua-dev/codex-router-cloudflare": "workspace:*"
+    "@akua-dev/codex-router-cloudflare": "workspace:*",
+    "effect": "4.0.0-beta.102"
   }
 }

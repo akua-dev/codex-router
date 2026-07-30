@@ -23,6 +23,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@akua-dev/codex-router-bun": "workspace:*",
+        "effect": "4.0.0-beta.102",
       },
     },
     "apps/worker": {
@@ -30,6 +31,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@akua-dev/codex-router-cloudflare": "workspace:*",
+        "effect": "4.0.0-beta.102",
       },
     },
     "packages/bun": {
