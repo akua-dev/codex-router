@@ -235,6 +235,9 @@ describe("selectAccount", () => {
       )
 
       expect(failure).toBeInstanceOf(NoEligibleAccountsError)
+      expect(failure.explanations).toHaveLength(1)
+      expect(failure.explanations[0]?.accountId).toBe("unknown")
+      expect(failure.explanations[0]?.rejection.valueOrUndefined).toBe("usage_unknown")
     })
   )
 })
