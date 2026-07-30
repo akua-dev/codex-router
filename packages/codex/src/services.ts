@@ -2,8 +2,7 @@ import type {
   AccountId,
   Candidate,
   SelectionReason,
-  SessionKey,
-  UsageSnapshot
+  SessionKey
 } from "@akua-dev/codex-router-core"
 import { Context, Effect, Option, Redacted, Schema } from "effect"
 
@@ -27,10 +26,6 @@ export class CredentialUnavailableError extends Schema.TaggedErrorClass<Credenti
     message: Schema.String
   }
 ) {}
-
-export class UsageProbeError extends Schema.TaggedErrorClass<UsageProbeError>()("UsageProbeError", {
-  message: Schema.String
-}) {}
 
 export class TransportError extends Schema.TaggedErrorClass<TransportError>()("TransportError", {
   message: Schema.String
@@ -62,13 +57,6 @@ export class AccountDirectory extends Context.Service<
     ) => Effect.Effect<AccountCredential, CredentialUnavailableError>
   }
 >()("@akua-dev/codex-router/AccountDirectory") {}
-
-export class UsageProbe extends Context.Service<
-  UsageProbe,
-  {
-    readonly usage: (accountId: AccountId) => Effect.Effect<UsageSnapshot, UsageProbeError>
-  }
->()("@akua-dev/codex-router/UsageProbe") {}
 
 export class UpstreamTransport extends Context.Service<
   UpstreamTransport,
