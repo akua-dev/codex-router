@@ -1,48 +1,31 @@
-import { describe, expect, it, layer } from "@effect/vitest"
+import { describe, expect, it } from "@effect/vitest"
+import { AccountId, RoutingState } from "@akua-dev/codex-router-core"
 import {
-  AccountId,
-  Candidate,
-  RoutingState,
-  UsageSnapshot,
-  UsageWindow
-} from "@akua-dev/codex-router-core"
-import {
-  AccountDirectory,
+  AccountAdmin,
+  AdminAuthenticator,
   ClientAuthenticator,
   GatewayTelemetry,
   SubscriptionCredential,
-  configuredSubscriptionRouterLayer,
+  SubscriptionRouter,
   UpstreamTransport
 } from "@akua-dev/codex-router-codex"
-import { Effect, Layer, Redacted } from "effect"
+import { Effect, Redacted } from "effect"
 import {
+  CredentialKeyAdmin,
+  CredentialKeyVersionCount,
   WorkerConfigError,
   decodeWorkerBindings,
-  durableObjectRoutingStateLayer,
+  encodeCredentialBundle,
+  importAesGcmKey,
   makeAiGatewayTransport,
+  makeCredentialCipher,
+  makeDurableObjectRoutingState,
+  makeDurableSubscriptionRouter,
   makeWorkerFetch
 } from "../src/index.ts"
 
 const now = Date.UTC(2026, 6, 30, 12)
 const accountId = AccountId.make("account-a")
-const candidate = Candidate.make({
-  accountId,
-  activeReservations: 0,
-  requiresReauthentication: false,
-  usage: UsageSnapshot.make({
-    accountId,
-    observedAt: now,
-    short: UsageWindow.make({
-      resetAt: now + 60 * 60 * 1_000,
-      usedPercent: 10
-    }),
-    weekly: UsageWindow.make({
-      resetAt: now + 7 * 24 * 60 * 60 * 1_000,
-      usedPercent: 10
-    })
-  })
-})
-
 const base64Url = (bytes: Uint8Array): string => {
   let binary = ""
   for (const byte of bytes) {
@@ -119,20 +102,70 @@ describe("worker bindings", () => {
       expect(error).toBeInstanceOf(WorkerConfigError)
     })
   )
+
+  it.effect("rejects shared trust tokens and invalid keyrings without exposing them", () =>
+    Effect.gen(function* () {
+      const namespace = {
+        get: () => ({ fetch: () => Promise.resolve(new Response()) }),
+        idFromName: () => "global"
+      }
+      const error = yield* Effect.flip(
+        decodeWorkerBindings({
+          CF_AIG_ACCOUNT_ID: "cf-account",
+          CF_AIG_CUSTOM_PROVIDER_SLUG: "codex-subscription",
+          CF_AIG_GATEWAY_ID: "router",
+          CF_AIG_TOKEN: "token",
+          CODEX_ROUTER_ADMIN_TOKEN: "shared-secret",
+          CODEX_ROUTER_CLIENT_TOKEN: "shared-secret",
+          CODEX_ROUTER_CREDENTIAL_KEYS_JSON: JSON.stringify({
+            currentVersion: "missing",
+            keys: { v1: "invalid-key" }
+          }),
+          ROUTER_STATE: namespace
+        })
+      )
+
+      expect(error).toBeInstanceOf(WorkerConfigError)
+      expect(error.message).not.toContain("shared-secret")
+      expect(error.message).not.toContain("invalid-key")
+    })
+  )
 })
 
 {
   const rpcBodies: Array<string> = []
   const order: Array<string> = []
+  const cipherKey = await Effect.runPromise(
+    importAesGcmKey(crypto.getRandomValues(new Uint8Array(32)))
+  )
+  const cipher = makeCredentialCipher({
+    currentVersion: "v1",
+    keys: new Map([["v1", cipherKey]])
+  })
+  const credential = SubscriptionCredential.make({
+    accessToken: Redacted.make("provider-secret"),
+    accountId,
+    expiresAt: Number.MAX_SAFE_INTEGER,
+    generation: 3,
+    providerAccountId: Redacted.make("provider-a"),
+    refreshToken: Redacted.make("refresh-secret")
+  })
+  const envelope = await Effect.runPromise(
+    cipher.encrypt(accountId, credential.generation, encodeCredentialBundle(credential))
+  )
   const stub = {
     async fetch(request: Request): Promise<Response> {
       const path = new URL(request.url).pathname
       const body = await request.text()
       rpcBodies.push(body)
       order.push(`rpc:${path}`)
-      if (path === "/acquire") {
+      if (path === "/route/acquire") {
         return Response.json({
           accountId,
+          credential: {
+            ...envelope,
+            generation: credential.generation
+          },
           expiresAt: now + 120_000,
           leaseToken: "lease-a"
         })
@@ -148,104 +181,124 @@ describe("worker bindings", () => {
     }
   }
   let aiGatewayRequest: Request | undefined
-  const dependencies = Layer.mergeAll(
-    durableObjectRoutingStateLayer(stub),
-    Layer.succeed(
-      ClientAuthenticator,
-      ClientAuthenticator.of({
-        authenticate: (request) =>
-          Effect.succeed(request.headers.get("x-ai-router-token") === "client-token")
-      })
-    ),
-    Layer.succeed(
-      AccountDirectory,
-      AccountDirectory.of({
-        candidates: Effect.succeed([candidate]),
-        credential: () =>
-          Effect.succeed(
-            SubscriptionCredential.make({
-              accessToken: Redacted.make("provider-secret"),
-              accountId,
-              expiresAt: Number.MAX_SAFE_INTEGER,
-              generation: 1,
-              providerAccountId: Redacted.make("provider-a"),
-              refreshToken: Redacted.make("refresh-secret")
-            })
-          )
-      })
-    ),
-    Layer.succeed(
-      UpstreamTransport,
-      makeAiGatewayTransport({
-        accountId: "cf-account",
-        customProviderSlug: "codex-subscription",
-        fetch: (request) => {
-          aiGatewayRequest = request
-          order.push("ai-gateway")
-          return Promise.resolve(
-            new Response(
-              new ReadableStream<Uint8Array>({
-                start(controller) {
-                  controller.enqueue(new TextEncoder().encode("data: done\n\n"))
-                  controller.close()
-                }
-              }),
-              { headers: { "content-type": "text/event-stream" } }
-            )
-          )
+  const adminAuthenticator = AdminAuthenticator.of({
+    authenticate: (request) =>
+      Effect.succeed(request.headers.get("x-ai-router-admin-token") === "admin-secret")
+  })
+  const keyAdmin = CredentialKeyAdmin.of({
+    counts: () => Effect.succeed([CredentialKeyVersionCount.make({ count: 1, keyVersion: "v1" })])
+  })
+  const adminService = AccountAdmin.of({
+    list: () => Effect.succeed([]),
+    putCredential: () => Effect.die("not used"),
+    remove: () => Effect.die("not used"),
+    setEnabled: () => Effect.die("not used")
+  })
+  const clientAuthenticator = ClientAuthenticator.of({
+    authenticate: (request) =>
+      Effect.succeed(request.headers.get("x-ai-router-token") === "client-token")
+  })
+  const routerService = makeDurableSubscriptionRouter(stub, cipher, "admin-secret")
+  const upstream = makeAiGatewayTransport({
+    accountId: "cf-account",
+    customProviderSlug: "codex-subscription",
+    fetch: async (request) => {
+      aiGatewayRequest = request
+      order.push("ai-gateway")
+      await request.arrayBuffer()
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: done\n\n"))
+            controller.close()
+          }
+        }),
+        { headers: { "content-type": "text/event-stream" } }
+      )
+    },
+    gatewayId: "router",
+    metadata: { runtime: "cloudflare" },
+    runToken: Redacted.make("aig-run-token")
+  })
+  const telemetry = GatewayTelemetry.of({
+    bookkeepingFailure: () => Effect.void,
+    decision: () => Effect.void
+  })
+  const routingState = makeDurableObjectRoutingState(stub)
+
+  describe("Worker request path", () => {
+    it("keeps telemetry payloads out of DO RPC and streams only through AI Gateway", async () => {
+      const fetch = await Effect.runPromise(
+        makeWorkerFetch().pipe(
+          Effect.provideService(AccountAdmin, adminService),
+          Effect.provideService(AdminAuthenticator, adminAuthenticator),
+          Effect.provideService(ClientAuthenticator, clientAuthenticator),
+          Effect.provideService(CredentialKeyAdmin, keyAdmin),
+          Effect.provideService(GatewayTelemetry, telemetry),
+          Effect.provideService(RoutingState, routingState),
+          Effect.provideService(SubscriptionRouter, routerService),
+          Effect.provideService(UpstreamTransport, upstream)
+        )
+      )
+      const health = await fetch(new Request("https://worker.invalid/healthz"))
+      let adminBodyPulled = false
+      const adminBody = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            adminBodyPulled = true
+            controller.enqueue(new TextEncoder().encode("{}"))
+            controller.close()
+          }
         },
-        gatewayId: "router",
-        metadata: { runtime: "cloudflare" },
-        runToken: Redacted.make("aig-run-token")
-      })
-    ),
-    Layer.succeed(
-      GatewayTelemetry,
-      GatewayTelemetry.of({
-        bookkeepingFailure: () => Effect.void,
-        decision: () => Effect.void
-      })
-    )
-  )
-  const testLayer = Layer.merge(
-    dependencies,
-    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
-  )
+        { highWaterMark: 0 }
+      )
+      const adminUnauthorized = await fetch(
+        new Request("https://worker.invalid/admin/accounts/account-a/credential", {
+          body: adminBody,
+          duplex: "half",
+          method: "PUT"
+        } as RequestInit & { readonly duplex: "half" })
+      )
+      const response = await fetch(
+        new Request("https://worker.invalid/responses", {
+          body: '{"prompt":"sensitive prompt body"}',
+          headers: { "x-ai-router-token": "client-token" },
+          method: "POST"
+        })
+      )
+      const keyVersions = await fetch(
+        new Request("https://worker.invalid/admin/key-versions", {
+          headers: { "x-ai-router-admin-token": "admin-secret" }
+        })
+      )
+      const body = await response.text()
+      const summary = await Effect.runPromise(routingState.summary(now))
 
-  layer(testLayer)("Worker request path", (it) => {
-    it.effect("keeps telemetry payloads out of DO RPC and streams only through AI Gateway", () =>
-      Effect.gen(function* () {
-        const fetch = yield* makeWorkerFetch()
-        const health = yield* Effect.promise(() =>
-          fetch(new Request("https://worker.invalid/healthz"))
-        )
-        const response = yield* Effect.promise(() =>
-          fetch(
-            new Request("https://worker.invalid/responses", {
-              body: '{"prompt":"sensitive prompt body"}',
-              headers: { "x-ai-router-token": "client-token" },
-              method: "POST"
-            })
-          )
-        )
-        const body = yield* Effect.promise(() => response.text())
-        const state = yield* RoutingState
-        const summary = yield* state.summary(now)
-
-        expect(health.status).toBe(200)
-        expect(body).toBe("data: done\n\n")
-        expect(order.indexOf("rpc:/acquire")).toBeLessThan(order.indexOf("ai-gateway"))
-        expect(order.filter((event) => event === "rpc:/renew")).toHaveLength(0)
-        expect(rpcBodies.join(" ")).not.toContain("sensitive prompt body")
-        expect(aiGatewayRequest).toBeDefined()
-        if (aiGatewayRequest === undefined) {
-          return
-        }
-        expect(aiGatewayRequest.headers.get("cf-aig-authorization")).toBe("Bearer aig-run-token")
-        expect(aiGatewayRequest.headers.get("cf-aig-collect-log-payload")).toBe("false")
-        expect(response.headers.has("cf-aig-authorization")).toBe(false)
-        expect(summary.activeReservations).toBe(0)
+      expect(health.status).toBe(200)
+      expect(adminUnauthorized.status).toBe(401)
+      expect(adminBodyPulled).toBe(false)
+      expect(keyVersions.status).toBe(200)
+      expect(await keyVersions.json()).toEqual({
+        versions: [{ count: 1, keyVersion: "v1" }]
       })
-    )
+      expect(body).toBe("data: done\n\n")
+      expect(order.indexOf("rpc:/route/acquire")).toBeLessThan(order.indexOf("ai-gateway"))
+      expect(order.filter((event) => event === "rpc:/route/renew")).toHaveLength(0)
+      expect(
+        order.filter((event) =>
+          ["rpc:/route/acquire", "rpc:/route/record-response", "rpc:/route/release"].includes(event)
+        )
+      ).toHaveLength(3)
+      expect(rpcBodies.join(" ")).toContain('"generation":3')
+      expect(rpcBodies.join(" ")).not.toContain("sensitive prompt body")
+      expect(aiGatewayRequest).toBeDefined()
+      if (aiGatewayRequest === undefined) {
+        return
+      }
+      expect(aiGatewayRequest.headers.get("cf-aig-authorization")).toBe("Bearer aig-run-token")
+      expect(aiGatewayRequest.headers.get("cf-aig-collect-log-payload")).toBe("false")
+      expect(response.headers.has("cf-aig-authorization")).toBe(false)
+      expect(summary.activeReservations).toBe(0)
+    })
   })
 }

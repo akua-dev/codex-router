@@ -10,6 +10,9 @@
       "invocation_logs": true
     }
   },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "durable_objects": {
     "bindings": [
       {

@@ -113,6 +113,22 @@ export const importAesGcmKeyFromBase64Url = Effect.fn("importAesGcmKeyFromBase64
   return yield* importAesGcmKey(bytes)
 })
 
+export const importCredentialKeyring = Effect.fn("importCredentialKeyring")(function* (input: {
+  readonly currentVersion: string
+  readonly keys: ReadonlyMap<string, Redacted.Redacted<string>>
+}) {
+  const entries = yield* Effect.forEach(
+    input.keys,
+    ([version, encoded]) =>
+      importAesGcmKeyFromBase64Url(encoded).pipe(Effect.map((key) => [version, key] as const)),
+    { concurrency: "unbounded" }
+  )
+  return makeCredentialCipher({
+    currentVersion: input.currentVersion,
+    keys: new Map(entries)
+  })
+})
+
 export const makeCredentialCipher = (options: CredentialCipherOptions): CredentialCipherShape =>
   CredentialCipher.of({
     encrypt: Effect.fn("CredentialCipher.encrypt")(function* (accountId, generation, plaintext) {

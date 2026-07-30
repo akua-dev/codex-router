@@ -1,31 +1,25 @@
 import {
-  AccountDirectory,
+  AccountAdmin,
+  AdminAuthenticator,
   AuthenticationError,
   ClientAuthenticator,
-  CredentialUnavailableError,
   GatewayTelemetry,
   SubscriptionCredential,
+  SubscriptionRouter,
   UpstreamTransport,
-  configuredSubscriptionRouterLayer,
   type RouterFetch
 } from "@akua-dev/codex-router-codex"
-import { Candidate, UsageSnapshot, UsageWindow, type AccountId } from "@akua-dev/codex-router-core"
-import { Effect, Layer, ManagedRuntime, Redacted, Schema } from "effect"
+import { UsageSnapshot, UsageWindow } from "@akua-dev/codex-router-core"
+import { Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { makeAiGatewayTransport } from "./ai-gateway-transport.ts"
 import type { WorkerConfiguredAccount, WorkerRuntimeConfig } from "./config.ts"
-import { importAesGcmKeyFromBase64Url, makeCredentialCipher } from "./credential-cipher.ts"
-import { makeDurableCredentialVault, type CredentialVault } from "./credential-vault.ts"
+import { encodeCredentialBundle } from "./credential-bundle.ts"
+import { importCredentialKeyring, type CredentialCipherShape } from "./credential-cipher.ts"
+import { CredentialKeyAdmin, makeDurableCredentialKeyAdmin } from "./credential-key-admin.ts"
+import { makeDurableAccountAdmin } from "./durable-account-admin.ts"
 import { durableObjectRoutingStateLayer } from "./durable-object-routing-state.ts"
+import { durableSubscriptionRouterLayer } from "./durable-subscription-router.ts"
 import { type CloudflareWorkerApplication, makeWorkerFetch } from "./worker.ts"
-
-const CredentialBundle = Schema.Struct({
-  accessToken: Schema.String,
-  expiresAt: Schema.Number,
-  providerAccountId: Schema.String,
-  refreshToken: Schema.String
-})
-
-const decodeCredentialBundle = Schema.decodeUnknownEffect(Schema.fromJsonString(CredentialBundle))
 
 const copyToArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
   const buffer = new ArrayBuffer(bytes.byteLength)
@@ -59,102 +53,33 @@ const bearerToken = (request: Request): string | undefined => {
   return undefined
 }
 
-const accountCandidate = (account: WorkerConfiguredAccount): Candidate =>
-  Candidate.make({
-    accountId: account.accountId,
-    activeReservations: 0,
-    requiresReauthentication: false,
-    usage: UsageSnapshot.make({
-      accountId: account.accountId,
-      observedAt: account.observedAt,
-      short: UsageWindow.make({
-        resetAt: account.shortResetAt,
-        usedPercent: account.shortUsedPercent
-      }),
-      weekly: UsageWindow.make({
-        resetAt: account.weeklyResetAt,
-        usedPercent: account.weeklyUsedPercent
+const authenticate = (actual: string | undefined, expected: Redacted.Redacted<string>) => {
+  if (actual === undefined) {
+    return Effect.succeed(false)
+  }
+  return Effect.tryPromise({
+    try: () => constantTimeHashEqual(actual, Redacted.value(expected)),
+    catch: () =>
+      new AuthenticationError({
+        message: "Request authentication could not be evaluated"
       })
-    })
   })
+}
 
-const encodedCredential = (account: WorkerConfiguredAccount): Redacted.Redacted<string> =>
-  Redacted.make(
-    JSON.stringify({
-      accessToken: Redacted.value(account.accessToken),
-      expiresAt: account.expiresAt,
-      providerAccountId: Redacted.value(account.providerAccountId),
-      refreshToken: Redacted.value(account.refreshToken)
-    })
-  )
-
-const bootstrapVault = Effect.fn("bootstrapCredentialVault")(function* (
-  accounts: ReadonlyArray<WorkerConfiguredAccount>,
-  vault: CredentialVault
-) {
-  yield* Effect.forEach(
-    accounts,
-    (account) => vault.put(account.accountId, encodedCredential(account)),
-    { concurrency: 1, discard: true }
-  )
-})
-
-const credentialFromVault = Effect.fn("credentialFromVault")(function* (
-  accountId: AccountId,
-  vault: CredentialVault
-) {
-  const encoded = yield* vault.get(accountId).pipe(
-    Effect.mapError(
-      () =>
-        new CredentialUnavailableError({
-          message: "The selected encrypted credential is unavailable"
-        })
-    )
-  )
-  const bundle = yield* decodeCredentialBundle(Redacted.value(encoded)).pipe(
-    Effect.mapError(
-      () =>
-        new CredentialUnavailableError({
-          message: "The selected encrypted credential is invalid"
-        })
-    )
-  )
-  return SubscriptionCredential.make({
-    accessToken: Redacted.make(bundle.accessToken),
-    accountId,
-    expiresAt: bundle.expiresAt,
-    generation: 1,
-    providerAccountId: Redacted.make(bundle.providerAccountId),
-    refreshToken: Redacted.make(bundle.refreshToken)
-  })
-})
-
-const workerAuthenticatorLayer = (config: WorkerRuntimeConfig) =>
+const workerClientAuthenticatorLayer = (config: WorkerRuntimeConfig) =>
   Layer.succeed(
     ClientAuthenticator,
     ClientAuthenticator.of({
-      authenticate: (request) => {
-        const actual = bearerToken(request)
-        if (actual === undefined) {
-          return Effect.succeed(false)
-        }
-        return Effect.tryPromise({
-          try: () => constantTimeHashEqual(actual, Redacted.value(config.clientToken)),
-          catch: () =>
-            new AuthenticationError({
-              message: "Client authentication could not be evaluated"
-            })
-        })
-      }
+      authenticate: (request) => authenticate(bearerToken(request), config.clientToken)
     })
   )
 
-const workerAccountDirectoryLayer = (config: WorkerRuntimeConfig, vault: CredentialVault) =>
+const workerAdminAuthenticatorLayer = (config: WorkerRuntimeConfig) =>
   Layer.succeed(
-    AccountDirectory,
-    AccountDirectory.of({
-      candidates: Effect.succeed(config.accounts.map(accountCandidate)),
-      credential: (accountId) => credentialFromVault(accountId, vault)
+    AdminAuthenticator,
+    AdminAuthenticator.of({
+      authenticate: (request) =>
+        authenticate(request.headers.get("x-ai-router-admin-token")?.trim(), config.adminToken)
     })
   )
 
@@ -180,31 +105,92 @@ const workerTelemetryLayer = Layer.succeed(
   })
 )
 
+const configuredCredential = (account: WorkerConfiguredAccount): SubscriptionCredential =>
+  SubscriptionCredential.make({
+    accessToken: account.accessToken,
+    accountId: account.accountId,
+    expiresAt: account.expiresAt,
+    generation: 1,
+    providerAccountId: account.providerAccountId,
+    refreshToken: account.refreshToken
+  })
+
+const configuredUsage = (account: WorkerConfiguredAccount): UsageSnapshot =>
+  UsageSnapshot.make({
+    accountId: account.accountId,
+    observedAt: account.observedAt,
+    short: UsageWindow.make({
+      resetAt: account.shortResetAt,
+      usedPercent: account.shortUsedPercent
+    }),
+    weekly: UsageWindow.make({
+      resetAt: account.weeklyResetAt,
+      usedPercent: account.weeklyUsedPercent
+    })
+  })
+
+const seedIfAbsent = Effect.fn("Cloudflare.seedIfAbsent")(function* (
+  config: WorkerRuntimeConfig,
+  stub: ReturnType<WorkerRuntimeConfig["routerState"]["get"]>,
+  cipher: CredentialCipherShape
+) {
+  if (config.accounts.length === 0) {
+    return
+  }
+  const accounts = yield* Effect.forEach(
+    config.accounts,
+    (account) => {
+      const credential = configuredCredential(account)
+      return cipher
+        .encrypt(account.accountId, credential.generation, encodeCredentialBundle(credential))
+        .pipe(
+          Effect.map((envelope) => ({
+            accountId: account.accountId,
+            credential: envelope,
+            expiresAt: credential.expiresAt,
+            generation: credential.generation,
+            usage: configuredUsage(account)
+          }))
+        )
+    },
+    { concurrency: "unbounded" }
+  )
+  const response = yield* Effect.tryPromise({
+    try: () =>
+      stub.fetch(
+        new Request("https://router-state.internal/seed", {
+          body: JSON.stringify({ accounts }),
+          headers: {
+            "content-type": "application/json",
+            "x-ai-router-internal-token": Redacted.value(config.adminToken)
+          },
+          method: "POST"
+        })
+      ),
+    catch: () => new Error("Durable Object seed request failed")
+  })
+  if (!response.ok) {
+    return yield* Effect.fail(new Error("Durable Object seed request failed"))
+  }
+})
+
 export const makeCloudflareWorkerApplication = async (
   config: WorkerRuntimeConfig,
   fetchImplementation: (request: Request) => Promise<Response> = fetch
 ): Promise<CloudflareWorkerApplication> => {
-  const keys = await Effect.runPromise(
-    Effect.forEach(
-      config.credentialKeyring.keys,
-      ([version, encoded]) =>
-        importAesGcmKeyFromBase64Url(encoded).pipe(Effect.map((key) => [version, key] as const)),
-      { concurrency: "unbounded" }
-    ).pipe(Effect.map((entries) => new Map(entries)))
-  )
-  const cipher = makeCredentialCipher({
-    currentVersion: config.credentialKeyring.currentVersion,
-    keys
-  })
+  const cipher = await Effect.runPromise(importCredentialKeyring(config.credentialKeyring))
   const objectId = config.routerState.idFromName("global")
   const stub = config.routerState.get(objectId)
-  const vault = makeDurableCredentialVault(stub, cipher)
-  await Effect.runPromise(bootstrapVault(config.accounts, vault))
+  await Effect.runPromise(seedIfAbsent(config, stub, cipher))
+  const internalToken = Redacted.value(config.adminToken)
 
-  const dependencies = Layer.mergeAll(
+  const layer = Layer.mergeAll(
     durableObjectRoutingStateLayer(stub),
-    workerAuthenticatorLayer(config),
-    workerAccountDirectoryLayer(config, vault),
+    durableSubscriptionRouterLayer(stub, cipher, internalToken),
+    workerClientAuthenticatorLayer(config),
+    workerAdminAuthenticatorLayer(config),
+    Layer.succeed(AccountAdmin, makeDurableAccountAdmin(stub, internalToken)),
+    Layer.succeed(CredentialKeyAdmin, makeDurableCredentialKeyAdmin(stub, internalToken)),
     Layer.succeed(
       UpstreamTransport,
       makeAiGatewayTransport({
@@ -221,16 +207,14 @@ export const makeCloudflareWorkerApplication = async (
     ),
     workerTelemetryLayer
   )
-  const layer = Layer.merge(
-    dependencies,
-    configuredSubscriptionRouterLayer.pipe(Layer.provide(dependencies))
-  )
   const runtime = ManagedRuntime.make(layer)
   try {
     const workerFetch: RouterFetch = await runtime.runPromise(makeWorkerFetch())
+    const router = await runtime.runPromise(SubscriptionRouter)
     return {
       close: runtime.dispose,
-      fetch: workerFetch
+      fetch: workerFetch,
+      maintain: (now: number) => Effect.runPromise(router.maintain(now))
     }
   } catch (error) {
     await runtime.dispose()
