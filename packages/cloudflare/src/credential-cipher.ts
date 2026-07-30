@@ -1,5 +1,5 @@
 import type { AccountId } from "@akua-dev/codex-router-core"
-import { Context, Effect, Redacted, Schema } from "effect"
+import { Context, Crypto, Effect, Encoding, Redacted, Schema } from "effect"
 
 export class EncryptedCredentialEnvelope extends Schema.Class<EncryptedCredentialEnvelope>(
   "EncryptedCredentialEnvelope"
@@ -53,24 +53,6 @@ const cipherFailure = () =>
     message: "Credential encryption or decryption failed; sensitive data was redacted"
   })
 
-const encodeBase64Url = (bytes: Uint8Array): string => {
-  let binary = ""
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "")
-}
-
-const decodeBase64Url = (value: string): Uint8Array => {
-  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
-    throw cipherFailure()
-  }
-  const base64 = value.replaceAll("-", "+").replaceAll("_", "/")
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4)
-  const binary = atob(base64 + padding)
-  return Uint8Array.from(binary, (character) => character.charCodeAt(0))
-}
-
 const decodeEnvelope = Schema.decodeUnknownEffect(EncryptedCredentialEnvelope)
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -106,10 +88,9 @@ export const importAesGcmKey = Effect.fn("importAesGcmKey")(function* (bytes: Ui
 export const importAesGcmKeyFromBase64Url = Effect.fn("importAesGcmKeyFromBase64Url")(function* (
   encoded: Redacted.Redacted<string>
 ) {
-  const bytes = yield* Effect.try({
-    try: () => decodeBase64Url(Redacted.value(encoded)),
-    catch: cipherFailure
-  })
+  const bytes = yield* Effect.fromResult(Encoding.decodeBase64Url(Redacted.value(encoded))).pipe(
+    Effect.mapError(cipherFailure)
+  )
   return yield* importAesGcmKey(bytes)
 })
 
@@ -123,20 +104,23 @@ export const importCredentialKeyring = Effect.fn("importCredentialKeyring")(func
       importAesGcmKeyFromBase64Url(encoded).pipe(Effect.map((key) => [version, key] as const)),
     { concurrency: "unbounded" }
   )
-  return makeCredentialCipher({
+  return yield* makeCredentialCipher({
     currentVersion: input.currentVersion,
     keys: new Map(entries)
   })
 })
 
-export const makeCredentialCipher = (options: CredentialCipherOptions): CredentialCipherShape =>
-  CredentialCipher.of({
+export const makeCredentialCipher = Effect.fn("makeCredentialCipher")(function* (
+  options: CredentialCipherOptions
+) {
+  const cryptoService = yield* Crypto.Crypto
+  const cipher = CredentialCipher.of({
     encrypt: Effect.fn("CredentialCipher.encrypt")(function* (accountId, generation, plaintext) {
       const key = options.keys.get(options.currentVersion)
       if (key === undefined || !Number.isSafeInteger(generation) || generation < 1) {
         return yield* cipherFailure()
       }
-      const nonce = crypto.getRandomValues(new Uint8Array(12))
+      const nonce = yield* cryptoService.randomBytes(12).pipe(Effect.mapError(cipherFailure))
       const algorithm: AesGcmParams = {
         additionalData: additionalData(accountId, generation),
         iv: copyToArrayBuffer(nonce),
@@ -148,9 +132,9 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
         catch: cipherFailure
       })
       return EncryptedCredentialEnvelope.make({
-        ciphertext: encodeBase64Url(new Uint8Array(ciphertext)),
+        ciphertext: Encoding.encodeBase64Url(new Uint8Array(ciphertext)),
         keyVersion: options.currentVersion,
-        nonce: encodeBase64Url(nonce)
+        nonce: Encoding.encodeBase64Url(nonce)
       })
     }),
     decrypt: Effect.fn("CredentialCipher.decrypt")(function* (accountId, generation, input) {
@@ -159,17 +143,15 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
       if (key === undefined || !Number.isSafeInteger(generation) || generation < 1) {
         return yield* cipherFailure()
       }
-      const nonce = yield* Effect.try({
-        try: () => decodeBase64Url(envelope.nonce),
-        catch: cipherFailure
-      })
+      const nonce = yield* Effect.fromResult(Encoding.decodeBase64Url(envelope.nonce)).pipe(
+        Effect.mapError(cipherFailure)
+      )
       if (nonce.byteLength !== 12) {
         return yield* cipherFailure()
       }
-      const ciphertext = yield* Effect.try({
-        try: () => decodeBase64Url(envelope.ciphertext),
-        catch: cipherFailure
-      })
+      const ciphertext = yield* Effect.fromResult(
+        Encoding.decodeBase64Url(envelope.ciphertext)
+      ).pipe(Effect.mapError(cipherFailure))
       const algorithm: AesGcmParams = {
         additionalData: additionalData(accountId, generation),
         iv: copyToArrayBuffer(nonce),
@@ -185,20 +167,14 @@ export const makeCredentialCipher = (options: CredentialCipherOptions): Credenti
     decryptForUse: Effect.fn("CredentialCipher.decryptForUse")(
       function* (accountId, generation, input) {
         const envelope = yield* decodeEnvelope(input).pipe(Effect.mapError(cipherFailure))
-        const plaintext = yield* makeCredentialCipher(options).decrypt(
-          accountId,
-          generation,
-          envelope
-        )
+        const plaintext = yield* cipher.decrypt(accountId, generation, envelope)
         if (envelope.keyVersion === options.currentVersion) {
           return { plaintext }
         }
-        const migration = yield* makeCredentialCipher(options).encrypt(
-          accountId,
-          generation,
-          plaintext
-        )
+        const migration = yield* cipher.encrypt(accountId, generation, plaintext)
         return { migration, plaintext }
       }
     )
   })
+  return cipher
+})

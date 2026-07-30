@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite"
 import { describe, expect, it } from "@effect/vitest"
 import { SubscriptionCredential } from "@akua-dev/codex-router-codex"
 import { AccountId, UsageSnapshot, UsageWindow } from "@akua-dev/codex-router-core"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
 import { Effect, Redacted, Schema } from "effect"
 import {
   RouterStateObject,
@@ -174,10 +175,10 @@ describe("RouterStateObject subscription coordination", () => {
         }
         const object = new RouterStateObject(state, environment)
         const key = yield* importAesGcmKey(rawKey)
-        const cipher = makeCredentialCipher({
+        const cipher = yield* makeCredentialCipher({
           currentVersion: "v1",
           keys: new Map([["v1", key]])
-        })
+        }).pipe(Effect.provide(BrowserCrypto.layer))
         const now = Date.now()
         const accountId = AccountId.make("account-a")
         const credential = SubscriptionCredential.make({

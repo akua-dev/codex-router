@@ -6,9 +6,11 @@ import {
   GatewayTelemetry,
   SubscriptionRouter,
   UpstreamTransport,
+  secureCompare,
   type RouterFetch
 } from "@akua-dev/codex-router-codex"
-import { Effect, Layer, ManagedRuntime, Redacted } from "effect"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
+import { Crypto, Effect, Layer, ManagedRuntime, Redacted } from "effect"
 import { makeAiGatewayTransport } from "./ai-gateway-transport.ts"
 import type { WorkerRuntimeConfig } from "./config.ts"
 import { importCredentialKeyring } from "./credential-cipher.ts"
@@ -17,26 +19,6 @@ import { makeDurableAccountAdmin } from "./durable-account-admin.ts"
 import { durableObjectRoutingStateLayer } from "./durable-object-routing-state.ts"
 import { durableSubscriptionRouterLayer } from "./durable-subscription-router.ts"
 import { type CloudflareWorkerApplication, makeWorkerFetch } from "./worker.ts"
-
-const copyToArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
-  const buffer = new ArrayBuffer(bytes.byteLength)
-  new Uint8Array(buffer).set(bytes)
-  return buffer
-}
-
-const digest = (value: string): Promise<ArrayBuffer> =>
-  crypto.subtle.digest("SHA-256", copyToArrayBuffer(new TextEncoder().encode(value)))
-
-const constantTimeHashEqual = async (actual: string, expected: string): Promise<boolean> => {
-  const [actualHash, expectedHash] = await Promise.all([digest(actual), digest(expected)])
-  const left = new Uint8Array(actualHash)
-  const right = new Uint8Array(expectedHash)
-  let difference = 0
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= (left[index] ?? 0) ^ (right[index] ?? 0)
-  }
-  return difference === 0
-}
 
 const bearerToken = (request: Request): string | undefined => {
   const dedicated = request.headers.get("x-ai-router-token")?.trim()
@@ -50,33 +32,49 @@ const bearerToken = (request: Request): string | undefined => {
   return undefined
 }
 
-const authenticate = (actual: string | undefined, expected: Redacted.Redacted<string>) => {
+const authenticate = (
+  crypto: Crypto.Crypto,
+  actual: string | undefined,
+  expected: Redacted.Redacted<string>
+) => {
   if (actual === undefined) {
     return Effect.succeed(false)
   }
-  return Effect.tryPromise({
-    try: () => constantTimeHashEqual(actual, Redacted.value(expected)),
-    catch: () =>
-      new AuthenticationError({
-        message: "Request authentication could not be evaluated"
-      })
-  })
+  return secureCompare(actual, Redacted.value(expected)).pipe(
+    Effect.provideService(Crypto.Crypto, crypto),
+    Effect.mapError(
+      () =>
+        new AuthenticationError({
+          message: "Request authentication could not be evaluated"
+        })
+    )
+  )
 }
 
 const workerClientAuthenticatorLayer = (config: WorkerRuntimeConfig) =>
-  Layer.succeed(
+  Layer.effect(
     ClientAuthenticator,
-    ClientAuthenticator.of({
-      authenticate: (request) => authenticate(bearerToken(request), config.clientToken)
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto
+      return ClientAuthenticator.of({
+        authenticate: (request) => authenticate(crypto, bearerToken(request), config.clientToken)
+      })
     })
   )
 
 const workerAdminAuthenticatorLayer = (config: WorkerRuntimeConfig) =>
-  Layer.succeed(
+  Layer.effect(
     AdminAuthenticator,
-    AdminAuthenticator.of({
-      authenticate: (request) =>
-        authenticate(request.headers.get("x-ai-router-admin-token")?.trim(), config.adminToken)
+    Effect.gen(function* () {
+      const crypto = yield* Crypto.Crypto
+      return AdminAuthenticator.of({
+        authenticate: (request) =>
+          authenticate(
+            crypto,
+            request.headers.get("x-ai-router-admin-token")?.trim(),
+            config.adminToken
+          )
+      })
     })
   )
 
@@ -106,16 +104,22 @@ export const makeCloudflareWorkerApplication = async (
   config: WorkerRuntimeConfig,
   fetchImplementation: (request: Request) => Promise<Response> = fetch
 ): Promise<CloudflareWorkerApplication> => {
-  const cipher = await Effect.runPromise(importCredentialKeyring(config.credentialKeyring))
+  const cipher = await Effect.runPromise(
+    importCredentialKeyring(config.credentialKeyring).pipe(Effect.provide(BrowserCrypto.layer))
+  )
   const objectId = config.routerState.idFromName("global")
   const stub = config.routerState.get(objectId)
   const internalToken = Redacted.value(config.adminToken)
+  const authenticators = Layer.merge(
+    workerClientAuthenticatorLayer(config),
+    workerAdminAuthenticatorLayer(config)
+  ).pipe(Layer.provide(BrowserCrypto.layer))
 
   const layer = Layer.mergeAll(
+    BrowserCrypto.layer,
     durableObjectRoutingStateLayer(stub),
     durableSubscriptionRouterLayer(stub, cipher, internalToken),
-    workerClientAuthenticatorLayer(config),
-    workerAdminAuthenticatorLayer(config),
+    authenticators,
     Layer.succeed(AccountAdmin, makeDurableAccountAdmin(stub, internalToken)),
     Layer.succeed(CredentialKeyAdmin, makeDurableCredentialKeyAdmin(stub, internalToken)),
     Layer.succeed(

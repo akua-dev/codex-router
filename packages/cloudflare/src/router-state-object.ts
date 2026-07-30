@@ -18,6 +18,7 @@ import {
   type AccountId as AccountIdType,
   type RoutingConfig
 } from "@akua-dev/codex-router-core"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
 import { Effect, Option, Redacted, Result, Schema } from "effect"
 import { decodeWorkerBindings, type WorkerRuntimeConfig } from "./config.ts"
 import { makeCloudflareCodexControlTransport } from "./control-transport.ts"
@@ -372,7 +373,9 @@ export class RouterStateObject {
     this.#state = state
     this.#environment = Effect.runPromise(decodeWorkerBindings(environment))
     this.#cipher = this.#environment.then((config) =>
-      Effect.runPromise(importCredentialKeyring(config.credentialKeyring))
+      Effect.runPromise(
+        importCredentialKeyring(config.credentialKeyring).pipe(Effect.provide(BrowserCrypto.layer))
+      )
     )
     this.#ready = state.blockConcurrencyWhile(async () => {
       state.storage.sql.exec(migration)

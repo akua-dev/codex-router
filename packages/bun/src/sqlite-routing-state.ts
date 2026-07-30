@@ -21,7 +21,7 @@ import {
   type UpstreamResponseClassification
 } from "@akua-dev/codex-router-core"
 import { Database } from "bun:sqlite"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Crypto, Effect, Layer, Option, Schema } from "effect"
 
 const AssignmentRow = Schema.Struct({
   session_key: Schema.String,
@@ -186,65 +186,71 @@ const currentAssignment = (
   return AccountId.make(decodeAssignment(raw).account_id)
 }
 
-const makeAcquire = (database: Database, config: RoutingConfig) => {
-  const transaction = database.transaction((input: AcquireRouteInput) => {
-    cleanup(database, input.now, config)
-    const counts = activeReservationCounts(database)
-    const health = healthMap(database)
-    const candidates = input.candidates.map((candidate) =>
-      overlayCandidate(candidate, counts, health)
-    )
-    const currentAccountId = currentAssignment(database, input.sessionKey)
-    const decision = Effect.runSync(
-      Effect.option(
-        selectAccount({
-          candidates,
-          config,
-          now: input.now,
-          ...(currentAccountId === undefined ? {} : { currentAccountId })
-        })
+const makeAcquire = (database: Database, config: RoutingConfig, crypto: Crypto.Crypto) => {
+  const transaction = database.transaction(
+    (input: AcquireRouteInput, leaseToken: LeaseTokenType) => {
+      cleanup(database, input.now, config)
+      const counts = activeReservationCounts(database)
+      const health = healthMap(database)
+      const candidates = input.candidates.map((candidate) =>
+        overlayCandidate(candidate, counts, health)
       )
-    )
-    if (Option.isNone(decision)) {
-      return Option.none<RouteLease>()
-    }
+      const currentAccountId = currentAssignment(database, input.sessionKey)
+      const decision = Effect.runSync(
+        Effect.option(
+          selectAccount({
+            candidates,
+            config,
+            now: input.now,
+            ...(currentAccountId === undefined ? {} : { currentAccountId })
+          })
+        )
+      )
+      if (Option.isNone(decision)) {
+        return Option.none<RouteLease>()
+      }
 
-    const leaseToken = LeaseToken.make(crypto.randomUUID())
-    const expiresAt = input.now + config.leaseTtlMs
-    database.run(
-      `INSERT INTO reservations(
+      const expiresAt = input.now + config.leaseTtlMs
+      database.run(
+        `INSERT INTO reservations(
          lease_token, account_id, session_key, created_at, expires_at
        ) VALUES (?, ?, ?, ?, ?)`,
-      [leaseToken, decision.value.accountId, input.sessionKey ?? null, input.now, expiresAt]
-    )
-    if (input.sessionKey !== undefined) {
-      database.run(
-        `INSERT INTO assignments(session_key, account_id, updated_at)
+        [leaseToken, decision.value.accountId, input.sessionKey ?? null, input.now, expiresAt]
+      )
+      if (input.sessionKey !== undefined) {
+        database.run(
+          `INSERT INTO assignments(session_key, account_id, updated_at)
          VALUES (?, ?, ?)
          ON CONFLICT(session_key) DO UPDATE SET
            account_id = excluded.account_id,
            updated_at = excluded.updated_at`,
-        [input.sessionKey, decision.value.accountId, input.now]
+          [input.sessionKey, decision.value.accountId, input.now]
+        )
+      }
+
+      return Option.some(
+        RouteLease.make({
+          accountId: decision.value.accountId,
+          expiresAt,
+          leaseToken,
+          sessionKey:
+            input.sessionKey === undefined
+              ? Option.none<SessionKeyType>()
+              : Option.some(input.sessionKey)
+        })
       )
     }
-
-    return Option.some(
-      RouteLease.make({
-        accountId: decision.value.accountId,
-        expiresAt,
-        leaseToken,
-        sessionKey:
-          input.sessionKey === undefined
-            ? Option.none<SessionKeyType>()
-            : Option.some(input.sessionKey)
-      })
-    )
-  })
+  )
 
   return (input: AcquireRouteInput) =>
-    Effect.try({
-      try: () => transaction.immediate(input),
-      catch: routingError
+    Effect.gen(function* () {
+      const leaseToken = LeaseToken.make(
+        yield* crypto.randomUUIDv4.pipe(Effect.mapError(routingError))
+      )
+      return yield* Effect.try({
+        try: () => transaction.immediate(input, leaseToken),
+        catch: routingError
+      })
     })
 }
 
@@ -370,6 +376,7 @@ export const openSqliteRoutingState = Effect.fn("openSqliteRoutingState")(functi
   databasePath: string,
   config: RoutingConfig = defaultRoutingConfig
 ) {
+  const crypto = yield* Crypto.Crypto
   const database = yield* Effect.try({
     try: () => {
       const opened = new Database(databasePath, { create: true, strict: true })
@@ -380,7 +387,7 @@ export const openSqliteRoutingState = Effect.fn("openSqliteRoutingState")(functi
   })
 
   const state = RoutingState.of({
-    acquire: makeAcquire(database, config),
+    acquire: makeAcquire(database, config, crypto),
     recordResponse: makeRecordResponse(database),
     release: (leaseToken) =>
       Effect.try({

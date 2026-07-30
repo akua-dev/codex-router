@@ -1,5 +1,5 @@
 import { AccountId } from "@akua-dev/codex-router-core"
-import { Effect, Redacted, Schema } from "effect"
+import { Effect, Encoding, Redacted, Result, Schema } from "effect"
 
 export interface RouterStateStub {
   readonly fetch: (request: Request) => Promise<Response>
@@ -96,16 +96,8 @@ const isRouterStateNamespace = (input: unknown): input is RouterStateNamespace =
 }
 
 const credentialKeyHasValidLength = (value: string): boolean => {
-  if (!/^[A-Za-z0-9_-]+$/u.test(value)) {
-    return false
-  }
-  try {
-    const base64 = value.replaceAll("-", "+").replaceAll("_", "/")
-    const padding = "=".repeat((4 - (base64.length % 4)) % 4)
-    return atob(base64 + padding).length === 32
-  } catch {
-    return false
-  }
+  const decoded = Encoding.decodeBase64Url(value)
+  return Result.isSuccess(decoded) && decoded.success.byteLength === 32
 }
 
 export const decodeWorkerBindings = Effect.fn("decodeWorkerBindings")(function* (input: unknown) {

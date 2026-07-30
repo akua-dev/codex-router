@@ -7,7 +7,7 @@ import {
   type RouterFetch,
   UpstreamTransport
 } from "@akua-dev/codex-router-codex"
-import { Effect, Option, Result } from "effect"
+import { Clock, Effect, Option, Result } from "effect"
 import { CredentialKeyAdmin } from "./credential-key-admin.ts"
 
 const keyVersionResponse = Effect.fn("keyVersionResponse")(function* (
@@ -37,7 +37,8 @@ const workerStatus = Effect.fn("workerStatus")(function* (
   if (Result.isFailure(authentication) || !authentication.success) {
     return Response.json({ error: "unauthorized" }, { status: 401 })
   }
-  const summary = yield* Effect.result(routingState.summary(Date.now()))
+  const now = yield* Clock.currentTimeMillis
+  const summary = yield* Effect.result(routingState.summary(now))
   if (Result.isFailure(summary)) {
     return Response.json({ error: "routing_state_unavailable" }, { status: 503 })
   }

@@ -8,6 +8,7 @@ import {
   classifyUpstreamResponse,
   defaultRoutingConfig
 } from "@akua-dev/codex-router-core"
+import * as BunCrypto from "@effect/platform-bun/BunCrypto"
 import { Effect, Option } from "effect"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -45,17 +46,13 @@ const candidate = (id: string, observedAt = now) => {
 }
 
 const candidates = [candidate("account-a"), candidate("account-b")]
+const openRoutingState = () =>
+  openSqliteRoutingState(databasePath, defaultRoutingConfig).pipe(Effect.provide(BunCrypto.layer))
 
 it.effect("shares transactionally visible leases and assignments across instances", () =>
   Effect.gen(function* () {
-    const first = yield* Effect.acquireRelease(
-      openSqliteRoutingState(databasePath, defaultRoutingConfig),
-      (handle) => handle.close
-    )
-    const second = yield* Effect.acquireRelease(
-      openSqliteRoutingState(databasePath, defaultRoutingConfig),
-      (handle) => handle.close
-    )
+    const first = yield* Effect.acquireRelease(openRoutingState(), (handle) => handle.close)
+    const second = yield* Effect.acquireRelease(openRoutingState(), (handle) => handle.close)
 
     const leases = yield* Effect.all(
       Array.from({ length: 20 }, (_, index) =>
@@ -77,10 +74,7 @@ it.effect("shares transactionally visible leases and assignments across instance
 
 it.effect("persists sticky assignments and cleans expired reservations atomically", () =>
   Effect.gen(function* () {
-    const handle = yield* Effect.acquireRelease(
-      openSqliteRoutingState(databasePath, defaultRoutingConfig),
-      (opened) => opened.close
-    )
+    const handle = yield* Effect.acquireRelease(openRoutingState(), (opened) => opened.close)
     const sessionKey = SessionKey.make("sticky-session")
     const first = yield* handle.state.acquire({
       candidates,
@@ -109,14 +103,8 @@ it.effect("persists sticky assignments and cleans expired reservations atomicall
 
 it.effect("shares replacement blocks and reauthentication state without secrets", () =>
   Effect.gen(function* () {
-    const first = yield* Effect.acquireRelease(
-      openSqliteRoutingState(databasePath, defaultRoutingConfig),
-      (handle) => handle.close
-    )
-    const second = yield* Effect.acquireRelease(
-      openSqliteRoutingState(databasePath, defaultRoutingConfig),
-      (handle) => handle.close
-    )
+    const first = yield* Effect.acquireRelease(openRoutingState(), (handle) => handle.close)
+    const second = yield* Effect.acquireRelease(openRoutingState(), (handle) => handle.close)
     const firstAccountId = candidates[0]?.accountId
     const secondAccountId = candidates[1]?.accountId
     expect(firstAccountId).toBeDefined()

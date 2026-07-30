@@ -1,16 +1,49 @@
 import { describe, expect, it } from "@effect/vitest"
 import { AccountId } from "@akua-dev/codex-router-core"
-import { Effect, Redacted } from "effect"
-import { CredentialCipherError, importAesGcmKey, makeCredentialCipher } from "../src/index.ts"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
+import { Crypto, Effect, Encoding, Layer, Redacted } from "effect"
+import {
+  CredentialCipherError,
+  importAesGcmKey,
+  makeCredentialCipher,
+  type CredentialCipherOptions
+} from "../src/index.ts"
 
 const randomKey = (): Uint8Array => crypto.getRandomValues(new Uint8Array(32))
+const makeBrowserCipher = (options: CredentialCipherOptions) =>
+  makeCredentialCipher(options).pipe(Effect.provide(BrowserCrypto.layer))
 
 describe("credential cipher", () => {
+  it("uses the injected Effect Crypto service for AES-GCM nonces", async () => {
+    const envelope = await Effect.runPromise(
+      Effect.gen(function* () {
+        const key = yield* importAesGcmKey(randomKey())
+        const cipher = yield* makeCredentialCipher({
+          currentVersion: "v1",
+          keys: new Map([["v1", key]])
+        })
+        return yield* cipher.encrypt(AccountId.make("account-a"), 1, Redacted.make("credential"))
+      }).pipe(
+        Effect.provide(
+          Layer.succeed(
+            Crypto.Crypto,
+            Crypto.make({
+              digest: (_algorithm, data) => Effect.succeed(data),
+              randomBytes: (size) => new Uint8Array(size).fill(0x5a)
+            })
+          )
+        )
+      )
+    )
+
+    expect(envelope.nonce).toBe(Encoding.encodeBase64Url(new Uint8Array(12).fill(0x5a)))
+  })
+
   it("round-trips with random nonces and an explicit key version", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const key = yield* importAesGcmKey(randomKey())
-        const cipher = makeCredentialCipher({
+        const cipher = yield* makeBrowserCipher({
           currentVersion: "v1",
           keys: new Map([["v1", key]])
         })
@@ -34,7 +67,7 @@ describe("credential cipher", () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const key = yield* importAesGcmKey(randomKey())
-        const cipher = makeCredentialCipher({
+        const cipher = yield* makeBrowserCipher({
           currentVersion: "v1",
           keys: new Map([["v1", key]])
         })
@@ -62,11 +95,11 @@ describe("credential cipher", () => {
       Effect.gen(function* () {
         const key = yield* importAesGcmKey(randomKey())
         const otherKey = yield* importAesGcmKey(randomKey())
-        const encryptor = makeCredentialCipher({
+        const encryptor = yield* makeBrowserCipher({
           currentVersion: "v1",
           keys: new Map([["v1", key]])
         })
-        const wrongDecryptor = makeCredentialCipher({
+        const wrongDecryptor = yield* makeBrowserCipher({
           currentVersion: "v1",
           keys: new Map([["v1", otherKey]])
         })
@@ -106,11 +139,11 @@ describe("credential cipher", () => {
       Effect.gen(function* () {
         const oldKey = yield* importAesGcmKey(randomKey())
         const currentKey = yield* importAesGcmKey(randomKey())
-        const oldCipher = makeCredentialCipher({
+        const oldCipher = yield* makeBrowserCipher({
           currentVersion: "v1",
           keys: new Map([["v1", oldKey]])
         })
-        const rotatingCipher = makeCredentialCipher({
+        const rotatingCipher = yield* makeBrowserCipher({
           currentVersion: "v2",
           keys: new Map([
             ["v1", oldKey],

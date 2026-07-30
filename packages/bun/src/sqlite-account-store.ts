@@ -1,5 +1,6 @@
 import * as SqliteClient from "@effect/sql-sqlite-bun/SqliteClient"
 import * as SqliteMigrator from "@effect/sql-sqlite-bun/SqliteMigrator"
+import * as BunCrypto from "@effect/platform-bun/BunCrypto"
 import {
   AccountId,
   Candidate,
@@ -19,7 +20,7 @@ import {
   SubscriptionRouteGrant,
   type SubscriptionAccountStoreShape
 } from "@akua-dev/codex-router-codex"
-import { Effect, Layer, Option, Redacted, Schema } from "effect"
+import { Clock, Crypto, Effect, Layer, Option, Redacted, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { subscriptionMigrations } from "./migrations.ts"
 import { sqliteRoutingStateLayer } from "./sqlite-routing-state.ts"
@@ -182,6 +183,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
   function* () {
     const sql = yield* SqlClient.SqlClient
     const routing = yield* RoutingState
+    const crypto = yield* Crypto.Crypto
 
     const seedIfAbsent: SubscriptionAccountStoreShape["seedIfAbsent"] = Effect.fn(
       "SqliteSubscriptionAccountStore.seedIfAbsent"
@@ -189,6 +191,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
       mapStoreFailure(
         sql.withTransaction(
           Effect.gen(function* () {
+            const updatedAt = yield* Clock.currentTimeMillis
             let inserted = 0
             for (const account of accounts) {
               const existing = yield* sql<{ account_id: string }>`
@@ -211,7 +214,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
                 ${credential?.generation ?? null},
                 ${credential?.expiresAt ?? null},
                 ${credential === undefined ? null : encodeCredential(credential)},
-                ${Date.now()}
+                ${updatedAt}
               )
             `
               if (account.usage !== undefined) {
@@ -257,7 +260,9 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
             if (account?.credential_generation !== generation || account.requires_reauth === 1) {
               return Option.none<RefreshClaim>()
             }
-            const token = RefreshClaimToken.make(crypto.randomUUID())
+            const token = RefreshClaimToken.make(
+              yield* crypto.randomUUIDv4.pipe(Effect.mapError(storeFailure))
+            )
             yield* sql`
             INSERT OR IGNORE INTO refresh_claims(
               account_id, operation, claim_token, generation, expires_at
@@ -290,6 +295,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
       mapStoreFailure(
         sql.withTransaction(
           Effect.gen(function* () {
+            const updatedAt = yield* Clock.currentTimeMillis
             const claims = yield* sql<typeof ClaimRow.Type>`
             SELECT account_id, operation, claim_token, generation, expires_at
             FROM refresh_claims
@@ -316,7 +322,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
                 credential_expires_at = ${commit.credential.expiresAt},
                 credential_json = ${encodeCredential(commit.credential)},
                 requires_reauth = 0,
-                updated_at = ${Date.now()}
+                updated_at = ${updatedAt}
             WHERE account_id = ${commit.accountId}
               AND credential_generation = ${commit.expectedGeneration}
           `
@@ -377,6 +383,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
           mapStoreFailure(
             sql.withTransaction(
               Effect.gen(function* () {
+                const updatedAt = yield* Clock.currentTimeMillis
                 const accounts = yield* sql<{
                   credential_generation: number | null
                 }>`
@@ -389,7 +396,7 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
                 }
                 yield* sql`
                 UPDATE subscription_accounts
-                SET requires_reauth = 1, updated_at = ${Date.now()}
+                SET requires_reauth = 1, updated_at = ${updatedAt}
                 WHERE account_id = ${accountId}
                   AND credential_generation = ${generation}
               `
@@ -612,8 +619,9 @@ export const sqliteSubscriptionAccountStoreLayer = (
     loader: subscriptionMigrations
   }).pipe(Layer.provide(sql))
   const migratedSql = Layer.merge(sql, migrations)
-  const routing = sqliteRoutingStateLayer(databasePath, config)
-  const dependencies = Layer.merge(migratedSql, routing)
+  const crypto = BunCrypto.layer
+  const routing = sqliteRoutingStateLayer(databasePath, config).pipe(Layer.provide(crypto))
+  const dependencies = Layer.mergeAll(migratedSql, routing, crypto)
   const store = Layer.effect(SubscriptionAccountStore, makeSqliteSubscriptionAccountStore()).pipe(
     Layer.provide(dependencies)
   )

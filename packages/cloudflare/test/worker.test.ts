@@ -9,6 +9,7 @@ import {
   SubscriptionRouter,
   UpstreamTransport
 } from "@akua-dev/codex-router-codex"
+import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto"
 import { Effect, Redacted } from "effect"
 import {
   CredentialKeyAdmin,
@@ -142,10 +143,12 @@ describe("worker bindings", () => {
   const cipherKey = await Effect.runPromise(
     importAesGcmKey(crypto.getRandomValues(new Uint8Array(32)))
   )
-  const cipher = makeCredentialCipher({
-    currentVersion: "v1",
-    keys: new Map([["v1", cipherKey]])
-  })
+  const cipher = await Effect.runPromise(
+    makeCredentialCipher({
+      currentVersion: "v1",
+      keys: new Map([["v1", cipherKey]])
+    }).pipe(Effect.provide(BrowserCrypto.layer))
+  )
   const credential = SubscriptionCredential.make({
     accessToken: Redacted.make("provider-secret"),
     accountId,
