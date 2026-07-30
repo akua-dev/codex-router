@@ -1,0 +1,27 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: codex-router-egress
+  labels:
+    app.kubernetes.io/name: codex-router-egress
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: codex-router
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codex-router-egress
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - ports:
+        - port: 53
+          protocol: TCP
+        - port: 53
+          protocol: UDP
+    - ports:
+        - port: 443
+          protocol: TCP
+        - port: 7844
+          protocol: TCP

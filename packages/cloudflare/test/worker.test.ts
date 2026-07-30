@@ -69,6 +69,7 @@ describe("worker bindings", () => {
             v1: base64Url(crypto.getRandomValues(new Uint8Array(32)))
           }
         }),
+        CODEX_ROUTER_RELAY_TOKEN: "relay-secret-value",
         ROUTER_STATE: namespace
       })
 
@@ -77,6 +78,7 @@ describe("worker bindings", () => {
       expect(JSON.stringify(config)).not.toContain("aig-secret-value")
       expect(JSON.stringify(config)).not.toContain("provider-secret-value")
       expect(JSON.stringify(config)).not.toContain("client-secret-value")
+      expect(JSON.stringify(config)).not.toContain("relay-secret-value")
     })
   )
 
@@ -95,6 +97,7 @@ describe("worker bindings", () => {
             currentVersion: "v1",
             keys: { v1: base64Url(new Uint8Array(32)) }
           }),
+          CODEX_ROUTER_RELAY_TOKEN: "relay",
           ROUTER_STATE: {}
         })
       )
@@ -121,6 +124,7 @@ describe("worker bindings", () => {
             currentVersion: "missing",
             keys: { v1: "invalid-key" }
           }),
+          CODEX_ROUTER_RELAY_TOKEN: "shared-secret",
           ROUTER_STATE: namespace
         })
       )
@@ -180,7 +184,7 @@ describe("worker bindings", () => {
       return Response.json({ ok: true })
     }
   }
-  let aiGatewayRequest: Request | undefined
+  const aiGatewayRequests: Array<Request> = []
   const adminAuthenticator = AdminAuthenticator.of({
     authenticate: (request) =>
       Effect.succeed(request.headers.get("x-ai-router-admin-token") === "admin-secret")
@@ -203,7 +207,7 @@ describe("worker bindings", () => {
     accountId: "cf-account",
     customProviderSlug: "codex-subscription",
     fetch: async (request) => {
-      aiGatewayRequest = request
+      aiGatewayRequests.push(request)
       order.push("ai-gateway")
       await request.arrayBuffer()
       return new Response(
@@ -213,11 +217,17 @@ describe("worker bindings", () => {
             controller.close()
           }
         }),
-        { headers: { "content-type": "text/event-stream" } }
+        {
+          headers: {
+            "content-type": "application/octet-stream",
+            "x-codex-upstream-content-type": "text/event-stream"
+          }
+        }
       )
     },
     gatewayId: "router",
     metadata: { runtime: "cloudflare" },
+    relayToken: Redacted.make("relay-token"),
     runToken: Redacted.make("aig-run-token")
   })
   const telemetry = GatewayTelemetry.of({
@@ -271,7 +281,13 @@ describe("worker bindings", () => {
           headers: { "x-ai-router-admin-token": "admin-secret" }
         })
       )
+      const canary = await fetch(
+        new Request("https://worker.invalid/admin/canary/sse", {
+          headers: { "x-ai-router-admin-token": "admin-secret" }
+        })
+      )
       const body = await response.text()
+      const canaryBody = await canary.text()
       const summary = await Effect.runPromise(routingState.summary(now))
 
       expect(health.status).toBe(200)
@@ -282,6 +298,8 @@ describe("worker bindings", () => {
         versions: [{ count: 1, keyVersion: "v1" }]
       })
       expect(body).toBe("data: done\n\n")
+      expect(canary.status).toBe(200)
+      expect(canaryBody).toBe("data: done\n\n")
       expect(order.indexOf("rpc:/route/acquire")).toBeLessThan(order.indexOf("ai-gateway"))
       expect(order.filter((event) => event === "rpc:/route/renew")).toHaveLength(0)
       expect(
@@ -291,12 +309,24 @@ describe("worker bindings", () => {
       ).toHaveLength(3)
       expect(rpcBodies.join(" ")).toContain('"generation":3')
       expect(rpcBodies.join(" ")).not.toContain("sensitive prompt body")
+      const aiGatewayRequest = aiGatewayRequests.find((request) =>
+        request.url.includes("/backend-api/codex/responses")
+      )
+      const canaryRequest = aiGatewayRequests.find((request) =>
+        request.url.includes("/synthetic/sse")
+      )
       expect(aiGatewayRequest).toBeDefined()
-      if (aiGatewayRequest === undefined) {
+      expect(canaryRequest).toBeDefined()
+      if (aiGatewayRequest === undefined || canaryRequest === undefined) {
         return
       }
       expect(aiGatewayRequest.headers.get("cf-aig-authorization")).toBe("Bearer aig-run-token")
       expect(aiGatewayRequest.headers.get("cf-aig-collect-log-payload")).toBe("false")
+      expect(aiGatewayRequest.headers.get("x-api-key")).toBe("relay-token")
+      expect(canaryRequest.url).toBe(
+        "https://gateway.ai.cloudflare.com/v1/cf-account/router/custom-codex-subscription/synthetic/sse"
+      )
+      expect(canaryRequest.headers.get("x-api-key")).toBe("relay-token")
       expect(response.headers.has("cf-aig-authorization")).toBe(false)
       expect(summary.activeReservations).toBe(0)
     })

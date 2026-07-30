@@ -32,6 +32,7 @@ export interface WorkerRuntimeConfig {
   readonly aiGatewayRunToken: Redacted.Redacted<string>
   readonly adminToken: Redacted.Redacted<string>
   readonly clientToken: Redacted.Redacted<string>
+  readonly relayToken: Redacted.Redacted<string>
   readonly credentialKeyring: CredentialKeyringConfig
   readonly accounts: ReadonlyArray<WorkerConfiguredAccount>
   readonly routerState: RouterStateNamespace
@@ -57,6 +58,7 @@ const Bindings = Schema.Struct({
   CODEX_ROUTER_ADMIN_TOKEN: Schema.String.check(Schema.isNonEmpty()),
   CODEX_ROUTER_CLIENT_TOKEN: Schema.String,
   CODEX_ROUTER_CREDENTIAL_KEYS_JSON: Schema.String,
+  CODEX_ROUTER_RELAY_TOKEN: Schema.String.check(Schema.isNonEmpty()),
   CODEX_ROUTER_ACCOUNTS_JSON: Schema.optionalKey(Schema.String),
   ROUTER_STATE: Schema.Unknown
 })
@@ -118,6 +120,8 @@ export const decodeWorkerBindings = Effect.fn("decodeWorkerBindings")(function* 
   if (
     !isRouterStateNamespace(bindings.ROUTER_STATE) ||
     bindings.CODEX_ROUTER_ADMIN_TOKEN === bindings.CODEX_ROUTER_CLIENT_TOKEN ||
+    bindings.CODEX_ROUTER_ADMIN_TOKEN === bindings.CODEX_ROUTER_RELAY_TOKEN ||
+    bindings.CODEX_ROUTER_CLIENT_TOKEN === bindings.CODEX_ROUTER_RELAY_TOKEN ||
     keyEntries.length === 0 ||
     decodedKeyring.keys[decodedKeyring.currentVersion] === undefined ||
     keyEntries.some(([, key]) => !credentialKeyHasValidLength(key))
@@ -137,6 +141,7 @@ export const decodeWorkerBindings = Effect.fn("decodeWorkerBindings")(function* 
       currentVersion: decodedKeyring.currentVersion,
       keys: new Map(keyEntries.map(([version, key]) => [version, Redacted.make(key)]))
     },
+    relayToken: Redacted.make(bindings.CODEX_ROUTER_RELAY_TOKEN),
     routerState: bindings.ROUTER_STATE
   } satisfies WorkerRuntimeConfig
 })

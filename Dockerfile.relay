@@ -1,0 +1,14 @@
+FROM oven/bun:canary-slim@sha256:d03c23d134cc7a78e38a9785746bdf768137bf40f65e377ec9c26e712a1403fc
+
+WORKDIR /app
+
+COPY . .
+RUN bun install --frozen-lockfile --production --filter @akua-dev/codex-router-relay-app
+
+ENV HOST=0.0.0.0
+ENV PORT=8788
+
+USER bun
+EXPOSE 8788
+
+CMD ["bun", "run", "apps/relay/src/main.ts"]

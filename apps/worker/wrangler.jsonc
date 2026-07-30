@@ -3,6 +3,14 @@
   "name": "codex-router",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-30",
+  "workers_dev": true,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "codex-router.akua.dev",
+      "custom_domain": true
+    }
+  ],
   "observability": {
     "enabled": true,
     "logs": {

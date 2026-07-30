@@ -18,10 +18,13 @@
   },
   "include": [
     "apps/server/**/*.ts",
+    "apps/relay/**/*.ts",
     "packages/bun/**/*.ts",
     "packages/codex/**/*.ts",
     "packages/core/**/*.ts",
     "packages/cloudflare/**/*.ts",
+    "packages/relay/**/*.ts",
+    "scripts/**/*.ts",
     "apps/worker/**/*.ts",
     "vitest.config.ts"
   ],

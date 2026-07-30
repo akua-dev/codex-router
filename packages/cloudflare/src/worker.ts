@@ -4,7 +4,8 @@ import {
   ClientAuthenticator,
   makeAccountAdminFetch,
   makeRouterFetch,
-  type RouterFetch
+  type RouterFetch,
+  UpstreamTransport
 } from "@akua-dev/codex-router-codex"
 import { Effect, Option, Result } from "effect"
 import { CredentialKeyAdmin } from "./credential-key-admin.ts"
@@ -52,6 +53,32 @@ const workerStatus = Effect.fn("workerStatus")(function* (
   })
 })
 
+const syntheticCanary = Effect.fn("syntheticCanary")(function* (
+  request: Request,
+  authenticator: AdminAuthenticator["Service"],
+  transport: UpstreamTransport["Service"]
+) {
+  const authentication = yield* Effect.result(authenticator.authenticate(request))
+  if (Result.isFailure(authentication)) {
+    return Response.json({ error: "authentication_unavailable" }, { status: 500 })
+  }
+  if (!authentication.success) {
+    return Response.json({ error: "unauthorized" }, { status: 401 })
+  }
+  const response = yield* Effect.result(
+    transport.execute(
+      new Request("https://chatgpt.com/synthetic/sse", {
+        headers: { accept: "text/event-stream" },
+        method: "GET",
+        signal: request.signal
+      })
+    )
+  )
+  return Result.isFailure(response)
+    ? Response.json({ error: "canary_unavailable" }, { status: 503 })
+    : response.success
+})
+
 export const makeWorkerFetch = Effect.fn("makeWorkerFetch")(function* () {
   const routerFetch = yield* makeRouterFetch()
   const adminFetch = yield* makeAccountAdminFetch()
@@ -59,6 +86,7 @@ export const makeWorkerFetch = Effect.fn("makeWorkerFetch")(function* () {
   const adminAuthenticator = yield* AdminAuthenticator
   const keyAdmin = yield* CredentialKeyAdmin
   const routingState = yield* RoutingState
+  const transport = yield* UpstreamTransport
 
   return (request: Request): Promise<Response> => {
     const path = new URL(request.url).pathname
@@ -67,6 +95,9 @@ export const makeWorkerFetch = Effect.fn("makeWorkerFetch")(function* () {
     }
     if (path === "/status" && request.method === "GET") {
       return Effect.runPromise(workerStatus(request, authenticator, routingState))
+    }
+    if (path === "/admin/canary/sse" && request.method === "GET") {
+      return Effect.runPromise(syntheticCanary(request, adminAuthenticator, transport))
     }
     if (path === "/admin/key-versions" && request.method === "GET") {
       return Effect.runPromise(keyVersionResponse(request, adminAuthenticator, keyAdmin))

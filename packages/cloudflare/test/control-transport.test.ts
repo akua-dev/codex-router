@@ -14,6 +14,7 @@ const config = {
     currentVersion: "v1",
     keys: new Map()
   },
+  relayToken: Redacted.make("relay-token"),
   routerState: {
     get: () => ({ fetch: () => Promise.resolve(new Response()) }),
     idFromName: () => "global"
@@ -53,6 +54,7 @@ describe("Cloudflare Codex control transport", () => {
       expect(requests[1]?.headers.get("cf-aig-collect-log-payload")).toBe("false")
       expect(requests[1]?.headers.get("cf-aig-skip-cache")).toBe("true")
       expect(requests[1]?.headers.get("cf-aig-max-attempts")).toBe("1")
+      expect(requests[1]?.headers.get("x-api-key")).toBe("relay-token")
       expect(requests[1]?.headers.get("cf-aig-metadata")).not.toContain("provider-account")
     })
   )

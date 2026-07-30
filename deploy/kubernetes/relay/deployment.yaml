@@ -1,0 +1,108 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codex-router-egress
+  labels:
+    app.kubernetes.io/name: codex-router-egress
+    app.kubernetes.io/component: relay
+    app.kubernetes.io/part-of: codex-router
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codex-router-egress
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codex-router-egress
+        app.kubernetes.io/component: relay
+        app.kubernetes.io/part-of: codex-router
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: codex-router-ghcr
+      serviceAccountName: codex-router-egress
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: ghcr.io/akua-dev/codex-router-relay@sha256:8989bcc03834752ce1b0fe67faefe15bca767760939ad0bea93cd2ff0d83ed30
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CODEX_ROUTER_RELAY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: codex-router-egress
+                  key: relay-token
+            - name: HOST
+              value: 0.0.0.0
+            - name: PORT
+              value: "8788"
+          ports:
+            - name: relay
+              containerPort: 8788
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: relay
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: relay
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+        - name: tunnel
+          image: cloudflare/cloudflared@sha256:a5b5e6fd9a372f054b9a843c219bfbcdceb54691605312a8b1ee72978bdf1aa1
+          imagePullPolicy: IfNotPresent
+          args:
+            - tunnel
+            - --no-autoupdate
+            - --protocol
+            - http2
+            - run
+            - --token
+            - $(TUNNEL_TOKEN)
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: codex-router-egress
+                  key: tunnel-token
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true

@@ -19,11 +19,21 @@
         "wrangler": "4.115.0",
       },
     },
+    "apps/relay": {
+      "name": "@akua-dev/codex-router-relay-app",
+      "version": "0.0.0",
+      "dependencies": {
+        "@akua-dev/codex-router-relay": "workspace:*",
+        "effect": "4.0.0-beta.102",
+      },
+    },
     "apps/server": {
       "name": "@akua-dev/codex-router-server",
       "version": "0.0.0",
       "dependencies": {
         "@akua-dev/codex-router-bun": "workspace:*",
+        "@akua-dev/codex-router-codex": "workspace:*",
+        "@akua-dev/codex-router-core": "workspace:*",
         "effect": "4.0.0-beta.102",
       },
     },
@@ -69,6 +79,13 @@
         "effect": "4.0.0-beta.102",
       },
     },
+    "packages/relay": {
+      "name": "@akua-dev/codex-router-relay",
+      "version": "0.0.0",
+      "dependencies": {
+        "effect": "4.0.0-beta.102",
+      },
+    },
   },
   "packages": {
     "@akua-dev/codex-router-bun": ["@akua-dev/codex-router-bun@workspace:packages/bun"],
@@ -78,6 +95,10 @@
     "@akua-dev/codex-router-codex": ["@akua-dev/codex-router-codex@workspace:packages/codex"],
 
     "@akua-dev/codex-router-core": ["@akua-dev/codex-router-core@workspace:packages/core"],
+
+    "@akua-dev/codex-router-relay": ["@akua-dev/codex-router-relay@workspace:packages/relay"],
+
+    "@akua-dev/codex-router-relay-app": ["@akua-dev/codex-router-relay-app@workspace:apps/relay"],
 
     "@akua-dev/codex-router-server": ["@akua-dev/codex-router-server@workspace:apps/server"],
 

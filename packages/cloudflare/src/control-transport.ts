@@ -42,6 +42,7 @@ export const makeCloudflareCodexControlTransport = (
       headers.set("cf-aig-skip-cache", "true")
       headers.set("cf-aig-collect-log-payload", "false")
       headers.set("cf-aig-max-attempts", "1")
+      headers.set("x-api-key", Redacted.value(config.relayToken))
       headers.set(
         "cf-aig-metadata",
         JSON.stringify({ operation: "subscription_usage", runtime: "cloudflare_do" })

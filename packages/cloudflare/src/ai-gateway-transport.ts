@@ -11,6 +11,7 @@ export interface AiGatewayTransportOptions {
   readonly accountId: string
   readonly gatewayId: string
   readonly customProviderSlug: string
+  readonly relayToken: Redacted.Redacted<string>
   readonly runToken: Redacted.Redacted<string>
   readonly metadata?: Readonly<Record<string, AiGatewayMetadataValue>>
   readonly fetch?: (request: Request) => Promise<Response>
@@ -44,13 +45,24 @@ const gatewayTarget = (requestUrl: URL, options: AiGatewayTransportOptions): URL
       `${root}/custom-${encodeURIComponent(options.customProviderSlug)}${requestUrl.pathname}${requestUrl.search}`
     )
   }
-  if (requestUrl.hostname === "api.openai.com") {
-    const path = requestUrl.pathname.startsWith("/v1/")
-      ? requestUrl.pathname.slice(3)
-      : requestUrl.pathname
-    return new URL(`${root}/openai${path}${requestUrl.search}`)
-  }
   throw new Error("unsupported upstream host")
+}
+
+const restoreUpstreamContentType = (response: Response): Response => {
+  const headers = new Headers(response.headers)
+  const marker = headers.get("x-codex-upstream-content-type")
+  headers.delete("x-codex-upstream-content-type")
+  if (
+    marker === "text/event-stream" &&
+    headers.get("content-type")?.toLowerCase().includes("application/octet-stream") === true
+  ) {
+    headers.set("content-type", "text/event-stream")
+  }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText
+  })
 }
 
 export const makeAiGatewayTransport = (
@@ -61,11 +73,13 @@ export const makeAiGatewayTransport = (
       Effect.tryPromise({
         try: () => {
           const metadata = validateMetadata(options.metadata)
+          const target = gatewayTarget(new URL(request.url), options)
           const headers = new Headers(request.headers)
           headers.set("cf-aig-authorization", `Bearer ${Redacted.value(options.runToken)}`)
           headers.set("cf-aig-skip-cache", "true")
           headers.set("cf-aig-collect-log-payload", "false")
           headers.set("cf-aig-max-attempts", "1")
+          headers.set("x-api-key", Redacted.value(options.relayToken))
           if (metadata === undefined) {
             headers.delete("cf-aig-metadata")
           } else {
@@ -79,8 +93,8 @@ export const makeAiGatewayTransport = (
             redirect: request.redirect,
             signal: request.signal
           }
-          const forwarded = new Request(gatewayTarget(new URL(request.url), options), init)
-          return (options.fetch ?? fetch)(forwarded)
+          const forwarded = new Request(target, init)
+          return (options.fetch ?? fetch)(forwarded).then(restoreUpstreamContentType)
         },
         catch: () =>
           new TransportError({

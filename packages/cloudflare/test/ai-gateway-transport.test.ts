@@ -18,6 +18,7 @@ describe("AI Gateway transport", () => {
           protocol: "responses",
           runtime: "cloudflare"
         },
+        relayToken: Redacted.make("relay-secret"),
         runToken: Redacted.make("cloudflare-run-secret")
       })
       const original = new Request("https://chatgpt.com/backend-api/codex/responses?stream=true", {
@@ -44,6 +45,7 @@ describe("AI Gateway transport", () => {
       expect(forwarded.headers.get("cf-aig-skip-cache")).toBe("true")
       expect(forwarded.headers.get("cf-aig-collect-log-payload")).toBe("false")
       expect(forwarded.headers.get("cf-aig-max-attempts")).toBe("1")
+      expect(forwarded.headers.get("x-api-key")).toBe("relay-secret")
       const metadata = forwarded.headers.get("cf-aig-metadata")
       expect(metadata).toBe(JSON.stringify({ protocol: "responses", runtime: "cloudflare" }))
       expect(metadata).not.toContain("provider-secret")
@@ -51,30 +53,31 @@ describe("AI Gateway transport", () => {
     })
   )
 
-  it.effect("maps standard OpenAI v1 paths to the native provider endpoint", () =>
+  it.effect("rejects non-subscription upstream hosts without transmitting", () =>
     Effect.gen(function* () {
-      let url: string | undefined
+      let transmitted = false
       const transport = makeAiGatewayTransport({
         accountId: "cf-account",
         customProviderSlug: "codex-subscription",
-        fetch: (request) => {
-          url = request.url
+        fetch: () => {
+          transmitted = true
           return Promise.resolve(new Response(null, { status: 204 }))
         },
         gatewayId: "router",
+        relayToken: Redacted.make("relay-secret"),
         runToken: Redacted.make("run-token")
       })
 
-      yield* transport.execute(
-        new Request("https://api.openai.com/v1/responses/compact", {
-          body: "{}",
-          method: "POST"
-        })
+      yield* Effect.flip(
+        transport.execute(
+          new Request("https://api.openai.com/v1/responses/compact", {
+            body: "{}",
+            method: "POST"
+          })
+        )
       )
 
-      expect(url).toBe(
-        "https://gateway.ai.cloudflare.com/v1/cf-account/router/openai/responses/compact"
-      )
+      expect(transmitted).toBe(false)
     })
   )
 
@@ -97,6 +100,7 @@ describe("AI Gateway transport", () => {
           five: 5,
           six: 6
         },
+        relayToken: Redacted.make("relay-secret"),
         runToken: Redacted.make("run-token")
       })
 
@@ -110,6 +114,40 @@ describe("AI Gateway transport", () => {
       )
 
       expect(transmitted).toBe(false)
+    })
+  )
+
+  it.effect("restores an encapsulated SSE content type without reading response bytes", () =>
+    Effect.gen(function* () {
+      const expected = new TextEncoder().encode("data: opaque\n\n")
+      const transport = makeAiGatewayTransport({
+        accountId: "cf-account",
+        customProviderSlug: "codex-subscription",
+        fetch: () =>
+          Promise.resolve(
+            new Response(expected, {
+              headers: {
+                "content-type": "application/octet-stream",
+                "x-codex-upstream-content-type": "text/event-stream"
+              }
+            })
+          ),
+        gatewayId: "router",
+        relayToken: Redacted.make("relay-secret"),
+        runToken: Redacted.make("run-token")
+      })
+
+      const response = yield* transport.execute(
+        new Request("https://chatgpt.com/backend-api/codex/responses", {
+          body: "{}",
+          method: "POST"
+        })
+      )
+      const actual = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()))
+
+      expect(response.headers.get("content-type")).toBe("text/event-stream")
+      expect(response.headers.has("x-codex-upstream-content-type")).toBe(false)
+      expect(actual).toEqual(expected)
     })
   )
 })

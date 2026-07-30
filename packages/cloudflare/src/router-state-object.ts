@@ -12,6 +12,7 @@ import {
   Candidate,
   LeaseToken,
   UsageSnapshot,
+  UsageWindow,
   defaultRoutingConfig,
   selectAccount,
   type AccountId as AccountIdType,
@@ -137,6 +138,7 @@ const SeedPayload = Schema.Struct({
     })
   )
 })
+type SeedAccount = (typeof SeedPayload.Type)["accounts"][number]
 
 const AdminCredentialPayload = Schema.Struct({
   accessToken: Schema.String.check(Schema.isNonEmpty()),
@@ -374,8 +376,45 @@ export class RouterStateObject {
     )
     this.#ready = state.blockConcurrencyWhile(async () => {
       state.storage.sql.exec(migration)
-      await this.#environment
-      await this.#cipher
+      const [config, cipher] = await Promise.all([this.#environment, this.#cipher])
+      const accounts = await Promise.all(
+        config.accounts.map(async (account): Promise<SeedAccount> => {
+          const credential = SubscriptionCredential.make({
+            accessToken: account.accessToken,
+            accountId: account.accountId,
+            expiresAt: account.expiresAt,
+            generation: 1,
+            providerAccountId: account.providerAccountId,
+            refreshToken: account.refreshToken
+          })
+          const encrypted = await Effect.runPromise(
+            cipher.encrypt(
+              account.accountId,
+              credential.generation,
+              encodeCredentialBundle(credential)
+            )
+          )
+          return {
+            accountId: account.accountId,
+            credential: encrypted,
+            expiresAt: credential.expiresAt,
+            generation: credential.generation,
+            usage: UsageSnapshot.make({
+              accountId: account.accountId,
+              observedAt: account.observedAt,
+              short: UsageWindow.make({
+                resetAt: account.shortResetAt,
+                usedPercent: account.shortUsedPercent
+              }),
+              weekly: UsageWindow.make({
+                resetAt: account.weeklyResetAt,
+                usedPercent: account.weeklyUsedPercent
+              })
+            })
+          }
+        })
+      )
+      this.#insertSeedAccounts(accounts)
     })
   }
 
@@ -441,10 +480,14 @@ export class RouterStateObject {
 
   async #seed(request: Request): Promise<Response> {
     const input = await decodeBody(request, SeedPayload)
+    return json({ inserted: this.#insertSeedAccounts(input.accounts) })
+  }
+
+  #insertSeedAccounts(accounts: ReadonlyArray<SeedAccount>): number {
     let inserted = 0
     this.#state.storage.transactionSync(() => {
       const sql = this.#state.storage.sql
-      for (const account of input.accounts) {
+      for (const account of accounts) {
         if (accountRow(sql, AccountId.make(account.accountId)) !== undefined) {
           continue
         }
@@ -473,7 +516,7 @@ export class RouterStateObject {
         inserted += 1
       }
     })
-    return json({ inserted })
+    return inserted
   }
 
   #claim(

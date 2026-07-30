@@ -56,22 +56,93 @@ const request = (path: string, body: unknown, internalToken?: string): Request =
   })
 
 describe("RouterStateObject subscription coordination", () => {
+  it("bootstraps configured accounts inside Durable Object initialization", async () => {
+    const database = new Database(":memory:")
+    const sql = {
+      exec(query: string, ...bindings: Array<string | number | null | ArrayBuffer>) {
+        if (bindings.length === 0 && query.includes(";")) {
+          database.exec(query)
+          return { toArray: () => [] }
+        }
+        const normalizedBindings = bindings.map((value) =>
+          value instanceof ArrayBuffer ? new Uint8Array(value) : value
+        )
+        const rows = normalizeRows(database.query(query).all(...normalizedBindings))
+        return {
+          toArray: () => rows
+        }
+      }
+    }
+    const state = {
+      blockConcurrencyWhile: <A>(body: () => Promise<A>) => body(),
+      storage: {
+        sql,
+        transactionSync: <A>(body: () => A) => body()
+      }
+    }
+    const namespace = {
+      get: () => ({ fetch: () => Promise.resolve(new Response()) }),
+      idFromName: () => "global"
+    }
+    const now = Date.now()
+    const object = new RouterStateObject(state, {
+      CF_AIG_ACCOUNT_ID: "cf-account",
+      CF_AIG_CUSTOM_PROVIDER_SLUG: "codex-subscription",
+      CF_AIG_GATEWAY_ID: "router",
+      CF_AIG_TOKEN: "aig-token",
+      CODEX_ROUTER_ACCOUNTS_JSON: JSON.stringify([
+        {
+          accessToken: "access-secret",
+          accountId: "account-a",
+          expiresAt: now + 60 * 60_000,
+          observedAt: now,
+          providerAccountId: "provider-a",
+          refreshToken: "refresh-secret",
+          shortResetAt: now + 60 * 60_000,
+          shortUsedPercent: 5,
+          weeklyResetAt: now + 7 * 24 * 60 * 60_000,
+          weeklyUsedPercent: 10
+        }
+      ]),
+      CODEX_ROUTER_ADMIN_TOKEN: "internal-secret",
+      CODEX_ROUTER_CLIENT_TOKEN: "client-secret",
+      CODEX_ROUTER_CREDENTIAL_KEYS_JSON: JSON.stringify({
+        currentVersion: "v1",
+        keys: { v1: base64Url(crypto.getRandomValues(new Uint8Array(32))) }
+      }),
+      CODEX_ROUTER_RELAY_TOKEN: "relay-secret",
+      ROUTER_STATE: namespace
+    })
+
+    const accounts = await object.fetch(request("/admin/accounts/list", {}, "internal-secret"))
+    const acquired = await object.fetch(request("/route/acquire", { now }))
+
+    const grant = await acquired.json()
+    expect(await accounts.json()).toMatchObject({
+      accounts: [{ accountId: "account-a" }]
+    })
+    expect(acquired.status).toBe(200)
+    expect(grant).toMatchObject({ accountId: "account-a" })
+    expect(JSON.stringify(grant)).not.toContain("access-secret")
+    database.close()
+  })
+
   it("seeds once, fuses credential delivery, and applies generation-safe responses", async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
         const database = new Database(":memory:")
         const sql = {
           exec(query: string, ...bindings: Array<string | number | null | ArrayBuffer>) {
-          if (bindings.length === 0 && query.includes(";")) {
+            if (bindings.length === 0 && query.includes(";")) {
               database.exec(query)
               return { toArray: () => [] }
-          }
-          const normalizedBindings = bindings.map((value) =>
-            value instanceof ArrayBuffer ? new Uint8Array(value) : value
-          )
-          const rows = database.query(query).all(...normalizedBindings)
-          const decoded = normalizeRows(rows)
-          return { toArray: () => decoded }
+            }
+            const normalizedBindings = bindings.map((value) =>
+              value instanceof ArrayBuffer ? new Uint8Array(value) : value
+            )
+            const rows = database.query(query).all(...normalizedBindings)
+            const decoded = normalizeRows(rows)
+            return { toArray: () => decoded }
           }
         }
         const state = {
@@ -98,6 +169,7 @@ describe("RouterStateObject subscription coordination", () => {
             currentVersion: "v1",
             keys: { v1: base64Url(rawKey) }
           }),
+          CODEX_ROUTER_RELAY_TOKEN: "relay-secret",
           ROUTER_STATE: namespace
         }
         const object = new RouterStateObject(state, environment)
