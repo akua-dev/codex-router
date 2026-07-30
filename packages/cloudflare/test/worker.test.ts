@@ -217,6 +217,7 @@ describe("worker bindings", () => {
         expect(health.status).toBe(200)
         expect(body).toBe("data: done\n\n")
         expect(order.indexOf("rpc:/acquire")).toBeLessThan(order.indexOf("ai-gateway"))
+        expect(order.filter((event) => event === "rpc:/renew")).toHaveLength(0)
         expect(rpcBodies.join(" ")).not.toContain("sensitive prompt body")
         expect(aiGatewayRequest).toBeDefined()
         if (aiGatewayRequest === undefined) {

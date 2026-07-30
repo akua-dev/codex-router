@@ -58,6 +58,7 @@ const streamWithLease = (
 ): ReadableStream<Uint8Array> => {
   const reader = body.getReader()
   let finishPromise: Promise<void> | undefined
+  let nextRenewAt = Date.now() + 40_000
   const finish = (): Promise<void> => {
     if (finishPromise === undefined) {
       finishPromise = Effect.runPromise(releaseIgnoringFailure(state, lease.leaseToken))
@@ -68,11 +69,13 @@ const streamWithLease = (
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        await Effect.runPromise(
-          state
-            .renew(lease.leaseToken, Date.now())
-            .pipe(Effect.catchCause(() => Effect.succeed(false)))
-        )
+        const now = Date.now()
+        if (now >= nextRenewAt) {
+          nextRenewAt = now + 40_000
+          await Effect.runPromise(
+            state.renew(lease.leaseToken, now).pipe(Effect.catchCause(() => Effect.succeed(false)))
+          )
+        }
         const next = await reader.read()
         if (next.done) {
           await finish()
