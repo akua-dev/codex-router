@@ -246,6 +246,8 @@ export const makeSqliteRoutingState = Effect.fn("makeSqliteRoutingState")(functi
                     account_id, block_kind, retry_at, requires_reauth
                   ) VALUES (${accountId}, NULL, NULL, 1)
                   ON CONFLICT(account_id) DO UPDATE SET
+                    block_kind = NULL,
+                    retry_at = NULL,
                     requires_reauth = 1
                 `.pipe(Effect.asVoid)
             : classification.kind === "quota" || classification.kind === "transient"

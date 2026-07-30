@@ -155,9 +155,11 @@ it.effect("shares replacement blocks and reauthentication state without secrets"
     const summary = yield* second.state.summary(now + 3)
 
     expect(Option.getOrUndefined(lease)?.accountId).toBe(secondAccountId)
-    expect(summary.accounts.find((account) => account.accountId === firstAccountId)).toMatchObject({
+    const firstAccount = summary.accounts.find((account) => account.accountId === firstAccountId)
+    expect(firstAccount).toMatchObject({
       requiresReauthentication: true
     })
+    expect(Option.isNone(firstAccount?.blockKind ?? Option.none())).toBe(true)
     expect(JSON.stringify(summary)).not.toContain("selected-secret")
   })
 )

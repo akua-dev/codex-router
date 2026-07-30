@@ -1,5 +1,5 @@
 import { type UsageSnapshot } from "@akua-dev/codex-router-core"
-import { Context, Effect, Redacted, Schema } from "effect"
+import { Clock, Context, Effect, Redacted, Schema } from "effect"
 import type { SubscriptionCredential } from "./credentials.ts"
 import type { CodexControlTransportShape } from "./control-transport.ts"
 import { decodeCodexUsage } from "./usage.ts"
@@ -79,10 +79,11 @@ export const makeCodexUsageProbe = (options: {
   readonly clock?: () => number
   readonly transport: CodexControlTransportShape
 }): UsageProbeShape => {
-  const clock = options.clock ?? Date.now
+  const currentTimeMillis =
+    options.clock === undefined ? Clock.currentTimeMillis : Effect.sync(options.clock)
   return UsageProbe.of({
     getUsage: Effect.fn("UsageProbe.getUsage")(function* (credential) {
-      const observedAt = clock()
+      const observedAt = yield* currentTimeMillis
       const response = yield* options.transport
         .execute(
           new Request("https://chatgpt.com/backend-api/wham/usage", {

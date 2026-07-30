@@ -1,5 +1,5 @@
 import { AccountId, type AccountId as AccountIdType } from "@akua-dev/codex-router-core"
-import { Context, Effect, Redacted, Schema } from "effect"
+import { Clock, Context, Effect, Redacted, Schema } from "effect"
 import type { HttpClientResponse } from "effect/unstable/http"
 import {
   SubscriptionCredential,
@@ -241,7 +241,8 @@ export const makeOpenAiOAuthClient = (options: {
   readonly clock?: () => number
   readonly transport: CodexControlTransportShape
 }): OAuthClientShape => {
-  const clock = options.clock ?? Date.now
+  const currentTimeMillis =
+    options.clock === undefined ? Clock.currentTimeMillis : Effect.sync(options.clock)
 
   return OAuthClient.of({
     startDeviceAuthorization: Effect.fn("OAuthClient.startDeviceAuthorization")(function* () {
@@ -261,7 +262,7 @@ export const makeOpenAiOAuthClient = (options: {
       const intervalSeconds = yield* parseInterval(decoded.interval)
       return DeviceAuthorization.make({
         deviceAuthId: Redacted.make(decoded.device_auth_id),
-        expiresAt: clock() + deviceTimeoutMs,
+        expiresAt: (yield* currentTimeMillis) + deviceTimeoutMs,
         intervalSeconds,
         userCode: decoded.user_code,
         verificationUri: deviceVerificationUri
@@ -270,7 +271,7 @@ export const makeOpenAiOAuthClient = (options: {
 
     pollDeviceAuthorization: Effect.fn("OAuthClient.pollDeviceAuthorization")(
       function* (device, accountId) {
-        if (clock() >= device.expiresAt) {
+        if ((yield* currentTimeMillis) >= device.expiresAt) {
           return yield* new OAuthPayloadError({
             message: "The OpenAI device authorization expired"
           })
@@ -334,7 +335,7 @@ export const makeOpenAiOAuthClient = (options: {
         const credential = yield* makeCredential({
           accessToken: token.access_token,
           accountId,
-          expiresAt: clock() + token.expires_in * 1_000,
+          expiresAt: (yield* currentTimeMillis) + token.expires_in * 1_000,
           generation: 1,
           refreshToken: token.refresh_token
         })
@@ -355,7 +356,7 @@ export const makeOpenAiOAuthClient = (options: {
         {
           accessToken: token.access_token,
           accountId: credential.accountId,
-          expiresAt: clock() + token.expires_in * 1_000,
+          expiresAt: (yield* currentTimeMillis) + token.expires_in * 1_000,
           generation: credential.generation + 1,
           refreshToken: token.refresh_token ?? Redacted.value(credential.refreshToken)
         },
