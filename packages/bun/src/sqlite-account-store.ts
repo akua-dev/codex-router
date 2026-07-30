@@ -399,6 +399,108 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
           )
       )
 
+    const replaceCredential: SubscriptionAccountStoreShape["replaceCredential"] = Effect.fn(
+      "SqliteSubscriptionAccountStore.replaceCredential"
+    )((replacement) =>
+      mapStoreFailure(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* getAccount(sql, replacement.accountId)
+            if (
+              Option.isSome(existing) &&
+              existing.value.credential !== undefined &&
+              Redacted.value(existing.value.credential.providerAccountId) !==
+                Redacted.value(replacement.credential.providerAccountId)
+            ) {
+              return Option.none<SubscriptionAccountState>()
+            }
+            const generation =
+              (Option.isSome(existing) ? (existing.value.credential?.generation ?? 0) : 0) + 1
+            const credential = SubscriptionCredential.make({
+              accessToken: replacement.credential.accessToken,
+              accountId: replacement.accountId,
+              expiresAt: replacement.credential.expiresAt,
+              generation,
+              providerAccountId: replacement.credential.providerAccountId,
+              refreshToken: replacement.credential.refreshToken
+            })
+            const enabled = Option.isSome(existing) ? existing.value.enabled : true
+            yield* sql`
+            INSERT INTO subscription_accounts(
+              account_id, enabled, requires_reauth, credential_generation,
+              credential_expires_at, credential_json, updated_at
+            ) VALUES (
+              ${replacement.accountId},
+              ${enabled ? 1 : 0},
+              0,
+              ${credential.generation},
+              ${credential.expiresAt},
+              ${encodeCredential(credential)},
+              ${replacement.now}
+            )
+            ON CONFLICT(account_id) DO UPDATE SET
+              credential_generation = excluded.credential_generation,
+              credential_expires_at = excluded.credential_expires_at,
+              credential_json = excluded.credential_json,
+              requires_reauth = 0,
+              updated_at = excluded.updated_at
+          `
+            yield* sql`DELETE FROM usage_snapshots WHERE account_id = ${replacement.accountId}`
+            yield* sql`DELETE FROM refresh_claims WHERE account_id = ${replacement.accountId}`
+            yield* sql`DELETE FROM blocks WHERE account_id = ${replacement.accountId}`
+            return yield* getAccount(sql, replacement.accountId)
+          })
+        )
+      )
+    )
+
+    const setEnabled: SubscriptionAccountStoreShape["setEnabled"] = Effect.fn(
+      "SqliteSubscriptionAccountStore.setEnabled"
+    )((accountId, enabled, now) =>
+      mapStoreFailure(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* getAccount(sql, accountId)
+            if (Option.isNone(existing)) {
+              return Option.none<SubscriptionAccountState>()
+            }
+            yield* sql`
+            UPDATE subscription_accounts
+            SET enabled = ${enabled ? 1 : 0}, updated_at = ${now}
+            WHERE account_id = ${accountId}
+          `
+            return yield* getAccount(sql, accountId)
+          })
+        )
+      )
+    )
+
+    const remove: SubscriptionAccountStoreShape["remove"] = Effect.fn(
+      "SqliteSubscriptionAccountStore.remove"
+    )((accountId) =>
+      mapStoreFailure(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            const existing = yield* sql<{ account_id: string }>`
+            SELECT account_id
+            FROM subscription_accounts
+            WHERE account_id = ${accountId}
+          `
+            if (existing.length === 0) {
+              return false
+            }
+            yield* sql`DELETE FROM refresh_claims WHERE account_id = ${accountId}`
+            yield* sql`DELETE FROM usage_snapshots WHERE account_id = ${accountId}`
+            yield* sql`DELETE FROM assignments WHERE account_id = ${accountId}`
+            yield* sql`DELETE FROM reservations WHERE account_id = ${accountId}`
+            yield* sql`DELETE FROM blocks WHERE account_id = ${accountId}`
+            yield* sql`DELETE FROM subscription_accounts WHERE account_id = ${accountId}`
+            return true
+          })
+        )
+      )
+    )
+
     const acquire: SubscriptionAccountStoreShape["acquire"] = Effect.fn(
       "SqliteSubscriptionAccountStore.acquire"
     )(function* (input) {
@@ -483,10 +585,13 @@ export const makeSqliteSubscriptionAccountStore = Effect.fn("makeSqliteSubscript
       list,
       markRequiresReauthentication,
       recordResponse,
+      remove,
+      replaceCredential,
       release,
       releaseClaim,
       renew,
       seedIfAbsent,
+      setEnabled,
       summary
     })
   }

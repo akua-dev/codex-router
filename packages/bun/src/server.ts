@@ -1,6 +1,7 @@
 import { RoutingState } from "@akua-dev/codex-router-core"
 import {
   ClientAuthenticator,
+  makeAccountAdminFetch,
   makeRouterFetch,
   type RouterFetch
 } from "@akua-dev/codex-router-codex"
@@ -33,6 +34,7 @@ const statusResponse = Effect.fn("bunStatusResponse")(function* (
 
 export const makeBunFetch = Effect.fn("makeBunFetch")(function* () {
   const routerFetch = yield* makeRouterFetch()
+  const adminFetch = yield* makeAccountAdminFetch()
   const authenticator = yield* ClientAuthenticator
   const routingState = yield* RoutingState
 
@@ -43,6 +45,9 @@ export const makeBunFetch = Effect.fn("makeBunFetch")(function* () {
     }
     if (path === "/status" && request.method === "GET") {
       return Effect.runPromise(statusResponse(request, authenticator, routingState))
+    }
+    if (path.startsWith("/admin/")) {
+      return adminFetch(request)
     }
     return routerFetch(request)
   }

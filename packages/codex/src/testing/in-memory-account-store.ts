@@ -1,10 +1,11 @@
 import {
   Candidate,
   RoutingState,
+  UpstreamResponseClassification,
   type AccountId,
   type UsageSnapshot
 } from "@akua-dev/codex-router-core"
-import { Effect, Layer, Option, SynchronizedRef } from "effect"
+import { Effect, Layer, Option, Redacted, SynchronizedRef } from "effect"
 import {
   RefreshClaim,
   RefreshClaimToken,
@@ -14,7 +15,7 @@ import {
   SubscriptionRouteGrant,
   type SubscriptionAccountStoreShape
 } from "../account-store.ts"
-import type { SubscriptionCredential } from "../credentials.ts"
+import { SubscriptionCredential } from "../credentials.ts"
 
 interface StoreState {
   readonly accounts: ReadonlyMap<AccountId, SubscriptionAccountState>
@@ -216,6 +217,90 @@ export const makeInMemorySubscriptionAccountStore = Effect.fn(
         })
     )
 
+  const replaceCredential: SubscriptionAccountStoreShape["replaceCredential"] = Effect.fn(
+    "InMemorySubscriptionAccountStore.replaceCredential"
+  )(function* (replacement) {
+    const replaced = yield* SynchronizedRef.modify(ref, (state) => {
+      const existing = state.accounts.get(replacement.accountId)
+      if (
+        existing?.credential !== undefined &&
+        Redacted.value(existing.credential.providerAccountId) !==
+          Redacted.value(replacement.credential.providerAccountId)
+      ) {
+        return transition(Option.none<SubscriptionAccountState>(), state)
+      }
+      const generation = (existing?.credential?.generation ?? 0) + 1
+      const credential = SubscriptionCredential.make({
+        accessToken: replacement.credential.accessToken,
+        accountId: replacement.accountId,
+        expiresAt: replacement.credential.expiresAt,
+        generation,
+        providerAccountId: replacement.credential.providerAccountId,
+        refreshToken: replacement.credential.refreshToken
+      })
+      const account = SubscriptionAccountState.make({
+        accountId: replacement.accountId,
+        credential,
+        enabled: existing?.enabled ?? true,
+        requiresReauthentication: false
+      })
+      const accounts = new Map(state.accounts)
+      accounts.set(replacement.accountId, account)
+      const claims = new Map(
+        [...state.claims].filter(([, claim]) => claim.accountId !== replacement.accountId)
+      )
+      return transition(Option.some(account), { ...state, accounts, claims })
+    })
+    if (Option.isSome(replaced)) {
+      yield* routing
+        .recordResponse(
+          replacement.accountId,
+          UpstreamResponseClassification.make({
+            kind: "success",
+            retryAt: Option.none()
+          }),
+          replacement.now
+        )
+        .pipe(Effect.mapError(storeFailure))
+    }
+    return replaced
+  })
+
+  const setEnabled: SubscriptionAccountStoreShape["setEnabled"] = Effect.fn(
+    "InMemorySubscriptionAccountStore.setEnabled"
+  )((accountId, enabled) =>
+    SynchronizedRef.modify(ref, (state) => {
+      const existing = state.accounts.get(accountId)
+      if (existing === undefined) {
+        return transition(Option.none<SubscriptionAccountState>(), state)
+      }
+      const account = SubscriptionAccountState.make({
+        accountId,
+        enabled,
+        requiresReauthentication: existing.requiresReauthentication,
+        ...(existing.credential === undefined ? {} : { credential: existing.credential }),
+        ...(existing.usage === undefined ? {} : { usage: existing.usage })
+      })
+      const accounts = new Map(state.accounts)
+      accounts.set(accountId, account)
+      return transition(Option.some(account), { ...state, accounts })
+    })
+  )
+
+  const remove: SubscriptionAccountStoreShape["remove"] = Effect.fn(
+    "InMemorySubscriptionAccountStore.remove"
+  )((accountId) =>
+    SynchronizedRef.modify(ref, (state) => {
+      if (!state.accounts.has(accountId)) {
+        return transition(false, state)
+      }
+      const accounts = new Map(state.accounts)
+      accounts.delete(accountId)
+      const claims = new Map([...state.claims].filter(([, claim]) => claim.accountId !== accountId))
+      return transition(true, { ...state, accounts, claims })
+    })
+  )
+
   const acquire: SubscriptionAccountStoreShape["acquire"] = Effect.fn(
     "InMemorySubscriptionAccountStore.acquire"
   )(function* (input) {
@@ -290,10 +375,13 @@ export const makeInMemorySubscriptionAccountStore = Effect.fn(
     list,
     markRequiresReauthentication,
     recordResponse,
+    remove,
+    replaceCredential,
     release,
     releaseClaim,
     renew,
     seedIfAbsent,
+    setEnabled,
     summary
   })
 })

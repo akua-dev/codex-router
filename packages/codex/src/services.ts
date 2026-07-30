@@ -34,6 +34,13 @@ export class ClientAuthenticator extends Context.Service<
   }
 >()("@akua-dev/codex-router/ClientAuthenticator") {}
 
+export class AdminAuthenticator extends Context.Service<
+  AdminAuthenticator,
+  {
+    readonly authenticate: (request: Request) => Effect.Effect<boolean, AuthenticationError>
+  }
+>()("@akua-dev/codex-router/AdminAuthenticator") {}
+
 export class AccountDirectory extends Context.Service<
   AccountDirectory,
   {

@@ -1,5 +1,6 @@
 import {
   AccountDirectory,
+  AdminAuthenticator,
   ClientAuthenticator,
   CredentialUnavailableError,
   GatewayTelemetry,
@@ -10,6 +11,7 @@ import {
   TransportError,
   UpstreamTransport,
   UsageProbe,
+  accountAdminLayer,
   makeCodexUsageProbe,
   makeFetchCodexControlTransport,
   makeOpenAiOAuthClient,
@@ -55,6 +57,20 @@ export const bunClientAuthenticatorLayer = (config: BunRuntimeConfig) =>
           const actual = bearerToken(request)
           return (
             actual !== undefined && constantTimeEqual(actual, Redacted.value(config.clientToken))
+          )
+        })
+    })
+  )
+
+export const bunAdminAuthenticatorLayer = (config: BunRuntimeConfig) =>
+  Layer.succeed(
+    AdminAuthenticator,
+    AdminAuthenticator.of({
+      authenticate: (request) =>
+        Effect.sync(() => {
+          const actual = request.headers.get("x-ai-router-admin-token")?.trim()
+          return (
+            actual !== undefined && constantTimeEqual(actual, Redacted.value(config.adminToken))
           )
         })
     })
@@ -165,14 +181,16 @@ export const bunRuntimeLayer = (config: BunRuntimeConfig) => {
   const controlTransport = makeFetchCodexControlTransport()
   const dependencies = Layer.mergeAll(
     initializedStorage,
+    bunAdminAuthenticatorLayer(config),
     bunClientAuthenticatorLayer(config),
     bunUpstreamTransportLayer,
     bunGatewayTelemetryLayer,
     Layer.succeed(OAuthClient, makeOpenAiOAuthClient({ transport: controlTransport })),
     Layer.succeed(UsageProbe, makeCodexUsageProbe({ transport: controlTransport }))
   )
-  const application = Layer.merge(
+  const application = Layer.mergeAll(
     dependencies,
+    accountAdminLayer.pipe(Layer.provide(dependencies)),
     subscriptionRouterLayer.pipe(Layer.provide(dependencies))
   )
   return Layer.merge(application, bunMaintenanceLayer.pipe(Layer.provide(application)))

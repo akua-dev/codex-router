@@ -81,6 +81,12 @@ export interface ResponseRecord {
   readonly now: number
 }
 
+export interface CredentialReplacement {
+  readonly accountId: AccountIdType
+  readonly credential: SubscriptionCredential
+  readonly now: number
+}
+
 export interface SubscriptionAccountStoreShape {
   readonly seedIfAbsent: (
     accounts: ReadonlyArray<SubscriptionAccountState>
@@ -110,6 +116,17 @@ export interface SubscriptionAccountStoreShape {
   readonly markRequiresReauthentication: (
     accountId: AccountIdType,
     generation: CredentialGeneration
+  ) => Effect.Effect<boolean, SubscriptionAccountStoreError>
+  readonly replaceCredential: (
+    replacement: CredentialReplacement
+  ) => Effect.Effect<Option.Option<SubscriptionAccountState>, SubscriptionAccountStoreError>
+  readonly setEnabled: (
+    accountId: AccountIdType,
+    enabled: boolean,
+    now: number
+  ) => Effect.Effect<Option.Option<SubscriptionAccountState>, SubscriptionAccountStoreError>
+  readonly remove: (
+    accountId: AccountIdType
   ) => Effect.Effect<boolean, SubscriptionAccountStoreError>
   readonly acquire: (
     input: SubscriptionAcquireInput

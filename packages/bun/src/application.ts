@@ -1,5 +1,7 @@
 import {
+  AccountAdmin,
   AccountDirectory,
+  AdminAuthenticator,
   ClientAuthenticator,
   GatewayTelemetry,
   UpstreamTransport,
@@ -31,4 +33,10 @@ export const makeBunApplication = async (config: BunRuntimeConfig): Promise<BunA
 }
 
 export type BunRuntimeServices =
-  RoutingState | ClientAuthenticator | AccountDirectory | UpstreamTransport | GatewayTelemetry
+  | RoutingState
+  | ClientAuthenticator
+  | AdminAuthenticator
+  | AccountAdmin
+  | AccountDirectory
+  | UpstreamTransport
+  | GatewayTelemetry

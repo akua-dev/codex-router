@@ -8,6 +8,8 @@ import {
   inMemoryRoutingStateLayer
 } from "@akua-dev/codex-router-core"
 import {
+  AccountAdmin,
+  AdminAuthenticator,
   AccountDirectory,
   ClientAuthenticator,
   GatewayTelemetry,
@@ -40,6 +42,22 @@ const candidate = Candidate.make({
 
 const dependencies = Layer.mergeAll(
   inMemoryRoutingStateLayer(defaultRoutingConfig),
+  Layer.succeed(
+    AdminAuthenticator,
+    AdminAuthenticator.of({
+      authenticate: (request) =>
+        Effect.succeed(request.headers.get("x-ai-router-admin-token") === "admin-secret")
+    })
+  ),
+  Layer.succeed(
+    AccountAdmin,
+    AccountAdmin.of({
+      list: () => Effect.succeed([]),
+      putCredential: () => Effect.die("not used"),
+      remove: () => Effect.die("not used"),
+      setEnabled: () => Effect.die("not used")
+    })
+  ),
   Layer.succeed(
     ClientAuthenticator,
     ClientAuthenticator.of({
@@ -120,6 +138,16 @@ layer(testLayer)("Bun HTTP composition", (it) => {
           })
         )
       )
+      const adminUnauthorized = yield* Effect.promise(() =>
+        fetch(new Request("http://localhost/admin/accounts"))
+      )
+      const admin = yield* Effect.promise(() =>
+        fetch(
+          new Request("http://localhost/admin/accounts", {
+            headers: { "x-ai-router-admin-token": "admin-secret" }
+          })
+        )
+      )
 
       expect(health.status).toBe(200)
       expect(yield* Effect.promise(() => health.json())).toEqual({ status: "ok" })
@@ -128,6 +156,8 @@ layer(testLayer)("Bun HTTP composition", (it) => {
       expect(JSON.stringify(yield* Effect.promise(() => status.json()))).not.toContain("secret")
       expect(response.status).toBe(200)
       expect(yield* Effect.promise(() => response.text())).toBe("data: done\n\n")
+      expect(adminUnauthorized.status).toBe(401)
+      expect(admin.status).toBe(200)
     })
   )
 })

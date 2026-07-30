@@ -18,6 +18,7 @@ export class BunRuntimeConfig extends Schema.Class<BunRuntimeConfig>("BunRuntime
   port: Schema.Number,
   hostname: Schema.String,
   databasePath: Schema.String,
+  adminToken: Schema.Redacted(Schema.String),
   clientToken: Schema.Redacted(Schema.String),
   accounts: Schema.Array(ConfiguredAccount)
 }) {}
@@ -27,8 +28,9 @@ export class BunConfigError extends Schema.TaggedErrorClass<BunConfigError>()("B
 }) {}
 
 const Environment = Schema.Struct({
-  CODEX_ROUTER_CLIENT_TOKEN: Schema.String,
-  CODEX_ROUTER_ACCOUNTS_JSON: Schema.String,
+  CODEX_ROUTER_ADMIN_TOKEN: Schema.String.check(Schema.isNonEmpty()),
+  CODEX_ROUTER_CLIENT_TOKEN: Schema.String.check(Schema.isNonEmpty()),
+  CODEX_ROUTER_ACCOUNTS_JSON: Schema.optionalKey(Schema.String),
   CODEX_ROUTER_DATABASE_PATH: Schema.optionalKey(Schema.String),
   PORT: Schema.optionalKey(Schema.String),
   HOST: Schema.optionalKey(Schema.String)
@@ -58,15 +60,16 @@ const parsePort = (value: string | undefined): Effect.Effect<number, BunConfigEr
 
 export const decodeBunConfig = Effect.fn("decodeBunConfig")(function* (input: unknown) {
   const environment = yield* decodeEnvironment(input).pipe(Effect.mapError(configFailure))
-  const accounts = yield* decodeAccounts(environment.CODEX_ROUTER_ACCOUNTS_JSON).pipe(
+  const accounts = yield* decodeAccounts(environment.CODEX_ROUTER_ACCOUNTS_JSON ?? "[]").pipe(
     Effect.mapError(configFailure)
   )
-  if (accounts.length === 0) {
+  if (environment.CODEX_ROUTER_ADMIN_TOKEN === environment.CODEX_ROUTER_CLIENT_TOKEN) {
     return yield* configFailure()
   }
   const port = yield* parsePort(environment.PORT)
 
   return BunRuntimeConfig.make({
+    adminToken: Redacted.make(environment.CODEX_ROUTER_ADMIN_TOKEN),
     accounts,
     clientToken: Redacted.make(environment.CODEX_ROUTER_CLIENT_TOKEN),
     databasePath: environment.CODEX_ROUTER_DATABASE_PATH ?? "./data/codex-router.sqlite",
