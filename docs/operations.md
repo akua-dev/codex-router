@@ -130,6 +130,10 @@ For Kubernetes:
 shutdown. Effect filesystem/path services create the database directory, and the scoped maintenance
 fiber repeats every minute until the launched layer is interrupted.
 
+The Bun account and routing repositories share one `@effect/sql-sqlite-bun` client per application
+layer. Official migrations `1_subscription_accounts` and `2_routing_state` are recorded in
+`effect_sql_migrations`; keep their IDs and names immutable after deployment.
+
 ## Cloudflare deployment
 
 ### AI Gateway

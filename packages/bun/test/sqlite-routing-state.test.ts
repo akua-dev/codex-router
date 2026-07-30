@@ -10,10 +10,11 @@ import {
 } from "@akua-dev/codex-router-core"
 import * as BunCrypto from "@effect/platform-bun/BunCrypto"
 import { Effect, Option } from "effect"
+import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { openSqliteRoutingState } from "../src/index.ts"
+import { openSqliteRoutingState, sqliteRoutingStateLayer } from "../src/index.ts"
 
 const testDirectory = mkdtempSync(join(tmpdir(), "codex-router-sqlite-"))
 const databasePath = join(testDirectory, "routing.sqlite")
@@ -48,6 +49,25 @@ const candidate = (id: string, observedAt = now) => {
 const candidates = [candidate("account-a"), candidate("account-b")]
 const openRoutingState = () =>
   openSqliteRoutingState(databasePath, defaultRoutingConfig).pipe(Effect.provide(BunCrypto.layer))
+
+it.effect("uses the official Effect SQL migration chain", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const migrations = yield* sql<{
+      readonly migration_id: number
+      readonly name: string
+    }>`
+      SELECT migration_id, name
+      FROM effect_sql_migrations
+      ORDER BY migration_id
+    `
+
+    expect(migrations).toEqual([
+      { migration_id: 1, name: "subscription_accounts" },
+      { migration_id: 2, name: "routing_state" }
+    ])
+  }).pipe(Effect.provide(sqliteRoutingStateLayer(databasePath)))
+)
 
 it.effect("shares transactionally visible leases and assignments across instances", () =>
   Effect.gen(function* () {

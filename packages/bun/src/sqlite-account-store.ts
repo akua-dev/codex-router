@@ -23,7 +23,7 @@ import {
 import { Clock, Crypto, Effect, Layer, Option, Redacted, Schema } from "effect"
 import * as SqlClient from "effect/unstable/sql/SqlClient"
 import { subscriptionMigrations } from "./migrations.ts"
-import { sqliteRoutingStateLayer } from "./sqlite-routing-state.ts"
+import { sqliteConnectionPragmas, sqliteRoutingStateFromSqlLayer } from "./sqlite-routing-state.ts"
 
 const AccountRow = Schema.Struct({
   account_id: Schema.String,
@@ -618,10 +618,12 @@ export const sqliteSubscriptionAccountStoreLayer = (
   const migrations = SqliteMigrator.layer({
     loader: subscriptionMigrations
   }).pipe(Layer.provide(sql))
-  const migratedSql = Layer.merge(sql, migrations)
+  const pragmas = Layer.effectDiscard(sqliteConnectionPragmas).pipe(Layer.provide(sql))
+  const migratedSql = Layer.mergeAll(sql, migrations, pragmas)
   const crypto = BunCrypto.layer
-  const routing = sqliteRoutingStateLayer(databasePath, config).pipe(Layer.provide(crypto))
-  const dependencies = Layer.mergeAll(migratedSql, routing, crypto)
+  const routingInfrastructure = Layer.merge(migratedSql, crypto)
+  const routing = sqliteRoutingStateFromSqlLayer(config).pipe(Layer.provide(routingInfrastructure))
+  const dependencies = Layer.mergeAll(routingInfrastructure, routing)
   const store = Layer.effect(SubscriptionAccountStore, makeSqliteSubscriptionAccountStore()).pipe(
     Layer.provide(dependencies)
   )

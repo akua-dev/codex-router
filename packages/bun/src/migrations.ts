@@ -44,5 +44,36 @@ export const subscriptionMigrations = SqliteMigrator.fromRecord({
         payload_json TEXT NOT NULL
       )
     `.withoutTransform
+  }),
+  "2_routing_state": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS assignments (
+        session_key TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `.withoutTransform
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS reservations (
+        lease_token TEXT PRIMARY KEY,
+        account_id TEXT NOT NULL,
+        session_key TEXT,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      )
+    `.withoutTransform
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS reservations_account_expiry
+      ON reservations(account_id, expires_at)
+    `.withoutTransform
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS blocks (
+        account_id TEXT PRIMARY KEY,
+        block_kind TEXT CHECK(block_kind IN ('quota', 'transient') OR block_kind IS NULL),
+        retry_at INTEGER,
+        requires_reauth INTEGER NOT NULL DEFAULT 0 CHECK(requires_reauth IN (0, 1))
+      )
+    `.withoutTransform
   })
 })
