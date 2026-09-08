@@ -8,9 +8,9 @@
   },
   "dependencies": {
     "@akua-dev/codex-router-codex": "workspace:*",
-    "effect": "4.0.0-beta.102"
+    "effect": "4.0.0-rc.112"
   },
   "devDependencies": {
-    "@effect/platform-browser": "4.0.0-beta.102"
+    "@effect/platform-browser": "4.0.0-rc.112"
   }
 }
