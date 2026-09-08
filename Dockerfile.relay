@@ -1,4 +1,4 @@
-FROM oven/bun:canary-slim@sha256:d03c23d134cc7a78e38a9785746bdf768137bf40f65e377ec9c26e712a1403fc
+FROM oven/bun:canary-slim@sha256:e42c00e43df64dd27bb8f42cda0101c826c497a2f7aeaa46ffa34335843b5087
 
 WORKDIR /app
 
